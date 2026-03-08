@@ -26,3 +26,6 @@ azalea-registry = "0.15"
 uuid = { version = "1", features = ["v4"] }
 crossbeam-channel = "0.5"
 image = "0.25"
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = "0.31"

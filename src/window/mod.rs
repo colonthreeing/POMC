@@ -13,6 +13,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::net::NetworkEvent;
 use crate::renderer::Renderer;
+use crate::ui::menu::{MainMenu, MenuAction};
 use crate::world::chunk::ChunkStore;
 use input::InputState;
 
@@ -28,6 +29,11 @@ pub enum WindowError {
     Renderer(#[from] crate::renderer::RendererError),
 }
 
+enum GameState {
+    Menu,
+    InGame,
+}
+
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -37,13 +43,23 @@ struct App {
     chunk_store: ChunkStore,
     assets_dir: PathBuf,
     position_set: bool,
+    state: GameState,
+    menu: MainMenu,
+    tokio_rt: Arc<tokio::runtime::Runtime>,
 }
 
 impl App {
     fn new(
         net_events: Option<crossbeam_channel::Receiver<NetworkEvent>>,
         assets_dir: PathBuf,
+        tokio_rt: Arc<tokio::runtime::Runtime>,
     ) -> Self {
+        let state = if net_events.is_some() {
+            GameState::InGame
+        } else {
+            GameState::Menu
+        };
+
         Self {
             window: None,
             renderer: None,
@@ -53,18 +69,43 @@ impl App {
             chunk_store: ChunkStore::new(8),
             assets_dir,
             position_set: false,
+            state,
+            menu: MainMenu::new(),
+            tokio_rt,
         }
     }
 
     fn apply_cursor_grab(&self) {
         let Some(window) = &self.window else { return };
-        if self.input.is_cursor_captured() {
+        let captured = matches!(self.state, GameState::InGame) && self.input.is_cursor_captured();
+        if captured {
             let _ = window.set_cursor_grab(CursorGrabMode::Confined);
             window.set_cursor_visible(false);
         } else {
             let _ = window.set_cursor_grab(CursorGrabMode::None);
             window.set_cursor_visible(true);
         }
+    }
+
+    fn connect_to_server(&mut self, server: String, username: String) {
+        let connect_args = crate::net::connection::ConnectArgs {
+            server,
+            username,
+            uuid: uuid::Uuid::nil(),
+            access_token: None,
+        };
+
+        let (event_tx, event_rx) = crossbeam_channel::bounded(256);
+
+        self.tokio_rt.spawn(async move {
+            if let Err(e) = crate::net::connection::connect_to_server(connect_args, event_tx).await
+            {
+                log::error!("Network error: {e}");
+            }
+        });
+
+        self.net_events = Some(event_rx);
+        self.state = GameState::InGame;
     }
 
     fn drain_network_events(&mut self) {
@@ -76,7 +117,11 @@ impl App {
                 NetworkEvent::Connected => {
                     log::info!("Connected to server");
                 }
-                NetworkEvent::ChunkLoaded { pos, data, heightmaps } => {
+                NetworkEvent::ChunkLoaded {
+                    pos,
+                    data,
+                    heightmaps,
+                } => {
                     if let Err(e) = self.chunk_store.load_chunk(pos, &data, &heightmaps) {
                         log::error!("Failed to load chunk [{}, {}]: {e}", pos.x, pos.z);
                         continue;
@@ -90,9 +135,17 @@ impl App {
                     }
                 }
                 NetworkEvent::ChunkCacheCenter { x, z } => {
-                    self.chunk_store.set_center(azalea_core::position::ChunkPos::new(x, z));
+                    self.chunk_store
+                        .set_center(azalea_core::position::ChunkPos::new(x, z));
                 }
-                NetworkEvent::PlayerPosition { x, y, z, yaw, pitch, .. } => {
+                NetworkEvent::PlayerPosition {
+                    x,
+                    y,
+                    z,
+                    yaw,
+                    pitch,
+                    ..
+                } => {
                     if !self.position_set {
                         if let Some(renderer) = &mut self.renderer {
                             renderer.set_camera_position(x, y, z, yaw, pitch);
@@ -155,6 +208,13 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
+            let response = renderer.handle_window_event(window, &event);
+            if response.consumed && !matches!(event, WindowEvent::RedrawRequested) {
+                return;
+            }
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -165,13 +225,15 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state.is_pressed() {
-                    if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
-                        self.input.toggle_cursor_capture();
-                        self.apply_cursor_grab();
+                if matches!(self.state, GameState::InGame) {
+                    if event.state.is_pressed() {
+                        if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
+                            self.input.toggle_cursor_capture();
+                            self.apply_cursor_grab();
+                        }
                     }
+                    self.input.on_key_event(&event);
                 }
-                self.input.on_key_event(&event);
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
@@ -181,12 +243,37 @@ impl ApplicationHandler for App {
                     .unwrap_or(0.0);
                 self.last_frame = Some(now);
 
-                self.drain_network_events();
+                match self.state {
+                    GameState::Menu => {
+                        if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
+                            let menu = &mut self.menu;
+                            let mut action = MenuAction::None;
+                            if let Err(e) = renderer.render_ui(window, |ctx| {
+                                action = menu.draw(ctx);
+                            }) {
+                                log::error!("Render error: {e}");
+                            }
 
-                if let Some(renderer) = &mut self.renderer {
-                    renderer.update(&mut self.input, dt);
-                    if let Err(e) = renderer.render() {
-                        log::error!("Render error: {e}");
+                            match action {
+                                MenuAction::Connect { server, username } => {
+                                    self.connect_to_server(server, username);
+                                }
+                                MenuAction::Quit => {
+                                    event_loop.exit();
+                                }
+                                MenuAction::None => {}
+                            }
+                        }
+                    }
+                    GameState::InGame => {
+                        self.drain_network_events();
+
+                        if let Some(renderer) = &mut self.renderer {
+                            renderer.update(&mut self.input, dt);
+                            if let Err(e) = renderer.render_world() {
+                                log::error!("Render error: {e}");
+                            }
+                        }
                     }
                 }
 
@@ -215,9 +302,10 @@ impl ApplicationHandler for App {
 pub fn run(
     net_events: Option<crossbeam_channel::Receiver<NetworkEvent>>,
     assets_dir: PathBuf,
+    tokio_rt: Arc<tokio::runtime::Runtime>,
 ) -> Result<(), WindowError> {
     let event_loop = EventLoop::new()?;
-    let mut app = App::new(net_events, assets_dir);
+    let mut app = App::new(net_events, assets_dir, tokio_rt);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

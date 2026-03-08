@@ -40,11 +40,14 @@ pub struct Renderer {
     depth_view: wgpu::TextureView,
     atlas: TextureAtlas,
     registry: BlockRegistry,
+    egui_renderer: egui_wgpu::Renderer,
+    egui_state: egui_winit::State,
+    egui_ctx: egui::Context,
 }
 
 impl Renderer {
     pub fn new(window: Arc<Window>, assets_dir: &Path) -> Result<Self, RendererError> {
-        let ctx = pollster::block_on(GpuContext::new(window))?;
+        let ctx = pollster::block_on(GpuContext::new(Arc::clone(&window)))?;
         let aspect = ctx.config.width as f32 / ctx.config.height as f32;
         let camera = Camera::new(aspect);
 
@@ -55,6 +58,18 @@ impl Renderer {
         let chunk_pipeline = ChunkPipeline::new(&ctx.device, ctx.config.format, &atlas);
         let depth_view = create_depth_view(&ctx.device, ctx.config.width, ctx.config.height);
 
+        let egui_ctx = egui::Context::default();
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(),
+            egui_ctx.viewport_id(),
+            &window,
+            None,
+            None,
+            None,
+        );
+        let egui_renderer =
+            egui_wgpu::Renderer::new(&ctx.device, ctx.config.format, None, 1, false);
+
         Ok(Self {
             ctx,
             camera,
@@ -62,17 +77,27 @@ impl Renderer {
             depth_view,
             atlas,
             registry,
+            egui_renderer,
+            egui_state,
+            egui_ctx,
         })
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         self.ctx.resize(new_size);
         if new_size.width > 0 && new_size.height > 0 {
-            self.depth_view =
-                create_depth_view(&self.ctx.device, new_size.width, new_size.height);
+            self.depth_view = create_depth_view(&self.ctx.device, new_size.width, new_size.height);
             self.camera
                 .set_aspect_ratio(new_size.width as f32 / new_size.height as f32);
         }
+    }
+
+    pub fn handle_window_event(
+        &mut self,
+        window: &Window,
+        event: &winit::event::WindowEvent,
+    ) -> egui_winit::EventResponse {
+        self.egui_state.on_window_event(window, event)
     }
 
     pub fn update(&mut self, input: &mut InputState, dt: f32) {
@@ -82,11 +107,8 @@ impl Renderer {
     }
 
     pub fn set_camera_position(&mut self, x: f64, y: f64, z: f64, yaw: f32, pitch: f32) {
-        self.camera.set_position(
-            glam::Vec3::new(x as f32, y as f32, z as f32),
-            yaw,
-            pitch,
-        );
+        self.camera
+            .set_position(glam::Vec3::new(x as f32, y as f32, z as f32), yaw, pitch);
     }
 
     pub fn upload_chunk_mesh(&mut self, mesh: &ChunkMeshData) {
@@ -101,7 +123,7 @@ impl Renderer {
         chunk::mesher::mesh_chunk(chunk_store, pos, &self.registry, &self.atlas)
     }
 
-    pub fn render(&mut self) -> Result<(), RendererError> {
+    pub fn render_world(&mut self) -> Result<(), RendererError> {
         let output = self.ctx.surface.get_current_texture()?;
         let view = output
             .texture
@@ -147,6 +169,84 @@ impl Renderer {
 
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
+        Ok(())
+    }
+
+    pub fn render_ui(
+        &mut self,
+        window: &Window,
+        ui_fn: impl FnMut(&egui::Context),
+    ) -> Result<(), RendererError> {
+        let raw_input = self.egui_state.take_egui_input(window);
+        let full_output = self.egui_ctx.run(raw_input, ui_fn);
+
+        self.egui_state
+            .handle_platform_output(window, full_output.platform_output);
+
+        let tris = self
+            .egui_ctx
+            .tessellate(full_output.shapes, full_output.pixels_per_point);
+
+        for (id, delta) in &full_output.textures_delta.set {
+            self.egui_renderer
+                .update_texture(&self.ctx.device, &self.ctx.queue, *id, delta);
+        }
+
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.ctx.config.width, self.ctx.config.height],
+            pixels_per_point: full_output.pixels_per_point,
+        };
+
+        let output = self.ctx.surface.get_current_texture()?;
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("egui_encoder"),
+            });
+
+        let commands = self.egui_renderer.update_buffers(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &mut encoder,
+            &tris,
+            &screen,
+        );
+
+        {
+            let mut render_pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("egui_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                })
+                .forget_lifetime();
+
+            self.egui_renderer.render(&mut render_pass, &tris, &screen);
+        }
+
+        let mut submit: Vec<wgpu::CommandBuffer> = commands;
+        submit.push(encoder.finish());
+        self.ctx.queue.submit(submit);
+        output.present();
+
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
+        }
 
         Ok(())
     }

@@ -1,10 +1,12 @@
 mod args;
 mod net;
 mod renderer;
+mod ui;
 mod window;
 mod world;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 
@@ -21,7 +23,7 @@ fn main() {
         .unwrap_or("reference/assets")
         .into();
 
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let rt = Arc::new(tokio::runtime::Runtime::new().expect("failed to create tokio runtime"));
 
     let event_rx = if let Some(ref server) = args.server {
         let connect_args = ConnectArgs {
@@ -48,10 +50,8 @@ fn main() {
         None
     };
 
-    if let Err(e) = window::run(event_rx, assets_dir) {
+    if let Err(e) = window::run(event_rx, assets_dir, rt) {
         log::error!("Fatal: {e}");
         std::process::exit(1);
     }
-
-    drop(rt);
 }
