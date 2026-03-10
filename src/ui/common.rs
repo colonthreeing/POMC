@@ -1,6 +1,8 @@
 use crate::renderer::pipelines::menu_overlay::MenuElement;
 
 pub const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+pub const FONT_SIZE: f32 = 8.0;
+pub const BTN_H: f32 = 20.0;
 pub const BTN_NORMAL: [f32; 4] = [0.3, 0.3, 0.3, 0.8];
 pub const BTN_HOVER: [f32; 4] = [0.45, 0.45, 0.55, 0.9];
 pub const BTN_DISABLED: [f32; 4] = [0.12, 0.12, 0.12, 0.7];
@@ -18,6 +20,7 @@ pub fn hit_test(cursor: (f32, f32), rect: [f32; 4]) -> bool {
         && cursor.1 >= rect[1] && cursor.1 <= rect[1] + rect[3]
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn push_button(
     elements: &mut Vec<MenuElement>,
     cursor: (f32, f32),

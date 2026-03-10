@@ -9,7 +9,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use thiserror::Error;
 use winit::window::Window;
 
-const MAX_FRAMES_IN_FLIGHT: usize = 2;
+use super::MAX_FRAMES_IN_FLIGHT;
 
 #[derive(Error, Debug)]
 pub enum ContextError {

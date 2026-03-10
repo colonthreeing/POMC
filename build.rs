@@ -21,6 +21,8 @@ fn main() {
         ("hand.frag", shaderc::ShaderKind::Fragment),
         ("menu_overlay.vert", shaderc::ShaderKind::Vertex),
         ("menu_overlay.frag", shaderc::ShaderKind::Fragment),
+        ("block_overlay.vert", shaderc::ShaderKind::Vertex),
+        ("block_overlay.frag", shaderc::ShaderKind::Fragment),
     ];
 
     for (file, kind) in &shaders {

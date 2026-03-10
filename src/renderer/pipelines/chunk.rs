@@ -7,8 +7,7 @@ use crate::renderer::camera::CameraUniform;
 use crate::renderer::chunk::atlas::TextureAtlas;
 use crate::renderer::shader;
 use crate::renderer::util;
-
-const MAX_FRAMES_IN_FLIGHT: usize = 2;
+use crate::renderer::MAX_FRAMES_IN_FLIGHT;
 
 pub struct ChunkPipeline {
     pub pipeline: vk::Pipeline,

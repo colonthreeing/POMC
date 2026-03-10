@@ -56,11 +56,9 @@ const ENTRY_H: f32 = 36.0;
 const ROW_W: f32 = 305.0;
 const FORM_W: f32 = 200.0;
 const BTN_GAP: f32 = 4.0;
-const BTN_H: f32 = 20.0;
 const TOP_BTN_W: f32 = 100.0;
 const BOT_BTN_W: f32 = 74.0;
 const SEP_H: f32 = 2.0;
-const FONT_SIZE: f32 = 8.0;
 const FIELD_H: f32 = 20.0;
 
 const COL_DIM: [f32; 4] = [0.63, 0.63, 0.63, 1.0];
@@ -278,7 +276,7 @@ impl MainMenu {
 
             elements.push(MenuElement::Rect {
                 x: bx, y: corner_pad, w: corner_size, h: corner_size,
-                corner_radius: corner_radius,
+                corner_radius,
                 color: if hovered { glass_hover } else { glass_normal },
             });
             elements.push(MenuElement::Icon {
@@ -418,8 +416,8 @@ impl MainMenu {
         let entry_h = ENTRY_H * gs;
         let row_w = ROW_W * gs;
         let gap = BTN_GAP * gs;
-        let fs = FONT_SIZE * gs;
-        let btn_h = BTN_H * gs;
+        let fs = common::FONT_SIZE * gs;
+        let btn_h = common::BTN_H * gs;
         let top_w = TOP_BTN_W * gs;
         let bot_w = BOT_BTN_W * gs;
         let cursor = input.cursor;
@@ -589,9 +587,9 @@ impl MainMenu {
         };
 
         let gs = (screen_h / 400.0).max(1.0);
-        let fs = FONT_SIZE * gs;
+        let fs = common::FONT_SIZE * gs;
         let form_w = FORM_W * gs;
-        let btn_h = BTN_H * gs;
+        let btn_h = common::BTN_H * gs;
         let gap = BTN_GAP * gs;
         let cursor = input.cursor;
         let clicked = input.clicked;
@@ -644,9 +642,9 @@ impl MainMenu {
         text_width_fn: &dyn Fn(&str, f32) -> f32,
     ) -> MainMenuResult {
         let gs = (screen_h / 400.0).max(1.0);
-        let fs = FONT_SIZE * gs;
+        let fs = common::FONT_SIZE * gs;
         let form_w = FORM_W * gs;
-        let btn_h = BTN_H * gs;
+        let btn_h = common::BTN_H * gs;
         let gap = BTN_GAP * gs;
         let field_h = FIELD_H * gs;
         let cursor = input.cursor;
@@ -714,9 +712,9 @@ impl MainMenu {
         text_width_fn: &dyn Fn(&str, f32) -> f32,
     ) -> MainMenuResult {
         let gs = (screen_h / 400.0).max(1.0);
-        let fs = FONT_SIZE * gs;
+        let fs = common::FONT_SIZE * gs;
         let form_w = FORM_W * gs;
-        let btn_h = BTN_H * gs;
+        let btn_h = common::BTN_H * gs;
         let gap = BTN_GAP * gs;
         let field_h = FIELD_H * gs;
         let cursor = input.cursor;
@@ -907,6 +905,7 @@ fn push_outline(elements: &mut Vec<MenuElement>, x: f32, y: f32, w: f32, h: f32,
     elements.push(MenuElement::Rect { x: x + w - t, y: y + t, w: t, h: h - t * 2.0, corner_radius: 0.0, color: c });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_button(
     elements: &mut Vec<MenuElement>,
     any_hovered: &mut bool,
@@ -916,11 +915,12 @@ fn push_button(
     label: &str,
     enabled: bool,
 ) -> bool {
-    let hovered = common::push_button(elements, cursor, x, y, w, h, gs, FONT_SIZE * gs, label, enabled);
+    let hovered = common::push_button(elements, cursor, x, y, w, h, gs, common::FONT_SIZE * gs, label, enabled);
     *any_hovered |= hovered;
     hovered
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_text_field(
     elements: &mut Vec<MenuElement>,
     x: f32, y: f32, w: f32, h: f32,
@@ -955,6 +955,7 @@ fn push_text_field(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_server_status(
     elements: &mut Vec<MenuElement>,
     ping_results: &std::collections::HashMap<String, PingState>,

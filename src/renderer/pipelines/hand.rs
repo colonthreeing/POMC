@@ -8,9 +8,7 @@ use gpu_allocator::vulkan::{Allocation, Allocator};
 use crate::assets::{resolve_asset_path, AssetIndex};
 use crate::renderer::shader;
 use crate::renderer::util;
-
-const MAX_FRAMES_IN_FLIGHT: usize = 2;
-const FOV: f32 = 1.2217;
+use crate::renderer::MAX_FRAMES_IN_FLIGHT;
 const NEAR: f32 = 0.05;
 const FAR: f32 = 10.0;
 
@@ -133,15 +131,7 @@ impl HandPipeline {
         let (skin_image, skin_view, skin_allocation, skin_w, skin_h) =
             load_skin_texture(device, queue, command_pool, allocator, assets_dir, asset_index);
 
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::NEAREST)
-            .min_filter(vk::Filter::NEAREST)
-            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
-        let skin_sampler = unsafe { device.create_sampler(&sampler_info, None) }
-            .expect("failed to create hand skin sampler");
+        let skin_sampler = unsafe { util::create_nearest_sampler(device) };
 
         let image_info = [vk::DescriptorImageInfo {
             sampler: skin_sampler,
@@ -191,24 +181,32 @@ impl HandPipeline {
         cmd: vk::CommandBuffer,
         frame: usize,
         aspect: f32,
+        swing_progress: f32,
     ) {
-        let mut proj = Mat4::perspective_rh(FOV, aspect, NEAR, FAR);
+        let mut proj = Mat4::perspective_rh(crate::renderer::camera::DEFAULT_FOV, aspect, NEAR, FAR);
         proj.y_axis.y *= -1.0;
 
-        // Vanilla ItemInHandRenderer.renderPlayerArm idle transform chain
-        // Base position: ARM_POS * ARM_POS_SCALE (0.8*0.8, -0.75*0.8, -0.9*0.8)
-        // Swing/equip offsets are 0 for idle
-        let model = Mat4::from_translation(Vec3::new(0.64, -0.6, -0.72))
+        let sp = swing_progress;
+        let sqrt_sp = sp.sqrt();
+        let pi = std::f32::consts::PI;
+
+        let x_off = -0.3 * (sqrt_sp * pi).sin();
+        let y_off = 0.4 * (sqrt_sp * pi * 2.0).sin();
+        let z_off = -0.4 * (sp * pi).sin();
+
+        let swing_y = (sqrt_sp * pi).sin() * 70.0_f32.to_radians();
+        let swing_z = (sp * sp * pi).sin() * (-20.0_f32).to_radians();
+
+        let model = Mat4::from_translation(Vec3::new(x_off + 0.64, y_off - 0.6, z_off - 0.72))
             * Mat4::from_rotation_y(45.0_f32.to_radians())
-            // Swing rotations (Y*70, Z*-20) are 0 for idle
+            * Mat4::from_rotation_y(swing_y)
+            * Mat4::from_rotation_z(swing_z)
             * Mat4::from_translation(Vec3::new(-1.0, 3.6, 3.5))
             * Mat4::from_rotation_z(120.0_f32.to_radians())
             * Mat4::from_rotation_x(200.0_f32.to_radians())
             * Mat4::from_rotation_y((-135.0_f32).to_radians())
             * Mat4::from_translation(Vec3::new(5.6, 0.0, 0.0))
-            // ModelPart.translateAndRotate: pivot (-5, 2, 0) / 16
             * Mat4::from_translation(Vec3::new(-5.0 / 16.0, 2.0 / 16.0, 0.0))
-            // Idle arm pose: rotationZYX(z=0.1, y=0, x=0)
             * Mat4::from_rotation_z(0.1);
 
         let mvp = proj * model;

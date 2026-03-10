@@ -169,7 +169,7 @@ async fn download_asset_objects(
         std::fs::write(&path, &bytes)?;
         downloaded += 1;
 
-        if downloaded % 100 == 0 {
+        if downloaded.is_multiple_of(100) {
             log::info!("Downloaded {downloaded}/{} assets...", total - skipped);
         }
     }

@@ -10,7 +10,6 @@ const MESSAGE_LIFETIME_SECS: f32 = 10.0;
 const CHAT_X: f32 = 4.0;
 const CHAT_BOTTOM_OFFSET: f32 = 52.0;
 const LINE_HEIGHT: f32 = 12.0;
-const FONT_SIZE: f32 = 8.0;
 const CHAT_WIDTH: f32 = 320.0;
 const INPUT_HEIGHT: f32 = 16.0;
 const TEXT_PAD: f32 = 4.0;
@@ -97,7 +96,7 @@ impl ChatState {
         text_width_fn: &dyn Fn(&str, f32) -> f32,
     ) {
         let now = Instant::now();
-        let fs = FONT_SIZE * gs;
+        let fs = common::FONT_SIZE * gs;
         let lh = LINE_HEIGHT * gs;
         let chat_w = CHAT_WIDTH * gs;
         let chat_x = CHAT_X * gs;

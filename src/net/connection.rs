@@ -67,11 +67,7 @@ pub fn spawn_connection(
     rt.spawn(async move {
         if let Err(e) = connect_to_server(args, event_tx.clone(), chat_rx, game_packet_tx, packet_rx).await {
             log::error!("Network error: {e}");
-            let reason = if is_connection_closed(&e) {
-                "Server closed".to_string()
-            } else {
-                e.to_string()
-            };
+            let reason = friendly_error_reason(&e);
             let _ = event_tx.try_send(NetworkEvent::Disconnected { reason });
         }
     });
@@ -359,9 +355,17 @@ fn resolve_address(server: &str) -> Result<SocketAddr, ConnectionError> {
         .ok_or_else(|| ConnectionError::InvalidAddress(format!("{addr}: no addresses found")))
 }
 
-fn is_connection_closed(err: &ConnectionError) -> bool {
+fn friendly_error_reason(err: &ConnectionError) -> String {
     let msg = err.to_string();
-    msg.contains("Connection closed")
-        || msg.contains("connection reset")
-        || msg.contains("broken pipe")
+    if msg.contains("connection refused") || msg.contains("Connection refused") {
+        "Connection refused".to_string()
+    } else if msg.contains("Connection closed") || msg.contains("connection reset") || msg.contains("broken pipe") {
+        "Server closed".to_string()
+    } else if msg.contains("timed out") || msg.contains("Timed out") {
+        "Connection timed out".to_string()
+    } else if msg.contains("no addresses found") || msg.contains("failed to lookup") {
+        "Unknown host".to_string()
+    } else {
+        msg
+    }
 }

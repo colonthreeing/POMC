@@ -1,3 +1,4 @@
+pub mod block_overlay;
 pub mod chunk;
 pub mod hand;
 pub mod menu_overlay;

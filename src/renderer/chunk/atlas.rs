@@ -111,14 +111,7 @@ impl TextureAtlas {
 
         util::upload_image(device, queue, command_pool, staging_buffer, image, atlas_size, atlas_size);
 
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::NEAREST)
-            .min_filter(vk::Filter::NEAREST)
-            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
-        let sampler = unsafe { device.create_sampler(&sampler_info, None)? };
+        let sampler = unsafe { util::create_nearest_sampler(device) };
 
         log::info!("Atlas built: {atlas_size}x{atlas_size}, {slot} textures");
 

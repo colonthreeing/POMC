@@ -252,30 +252,17 @@ impl MenuOverlayPipeline {
 
         util::upload_image(device, queue, command_pool, font_staging_buffer, font_image, ATLAS_SIZE, ATLAS_SIZE);
 
-        let linear_sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE);
-        let font_sampler = unsafe { device.create_sampler(&linear_sampler_info, None) }
-            .expect("failed to create font sampler");
+        let font_sampler = unsafe { util::create_linear_sampler(device) };
 
         let (sprite_atlas_data, sprite_image, sprite_view, sprite_alloc, sprite_staging_buffer, sprite_staging_alloc) =
             build_sprite_atlas(device, queue, command_pool, allocator, assets_dir, asset_index);
 
-        let nearest_sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::NEAREST)
-            .min_filter(vk::Filter::NEAREST)
-            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE);
-        let sprite_sampler = unsafe { device.create_sampler(&nearest_sampler_info, None) }
-            .expect("failed to create sprite sampler");
+        let sprite_sampler = unsafe { util::create_nearest_sampler(device) };
 
         let (item_atlas_data, item_image, item_view, item_alloc, item_staging_buffer, item_staging_alloc) =
             build_item_atlas(device, queue, command_pool, allocator, assets_dir, asset_index);
 
-        let item_sampler = unsafe { device.create_sampler(&nearest_sampler_info, None) }
-            .expect("failed to create item sampler");
+        let item_sampler = unsafe { util::create_nearest_sampler(device) };
 
         let font_img_info = [vk::DescriptorImageInfo {
             sampler: font_sampler,
@@ -420,15 +407,21 @@ impl MenuOverlayPipeline {
         unsafe { device.destroy_buffer(self.vertex_buffer, None) };
         if let Some(a) = self.vertex_allocation.take() { alloc.free(a).ok(); }
 
-        destroy_texture_resources(device, &mut alloc,
-            self.font_sampler, self.font_image, self.font_view,
-            &mut self.font_allocation, self.font_staging_buffer, &mut self.font_staging_allocation);
-        destroy_texture_resources(device, &mut alloc,
-            self.sprite_sampler, self.sprite_image, self.sprite_view,
-            &mut self.sprite_allocation, self.sprite_staging_buffer, &mut self.sprite_staging_allocation);
-        destroy_texture_resources(device, &mut alloc,
-            self.item_sampler, self.item_image, self.item_view,
-            &mut self.item_allocation, self.item_staging_buffer, &mut self.item_staging_allocation);
+        destroy_texture_resources(device, &mut alloc, &mut TextureResources {
+            sampler: self.font_sampler, image: self.font_image, view: self.font_view,
+            image_alloc: self.font_allocation.take(), staging_buffer: self.font_staging_buffer,
+            staging_alloc: self.font_staging_allocation.take(),
+        });
+        destroy_texture_resources(device, &mut alloc, &mut TextureResources {
+            sampler: self.sprite_sampler, image: self.sprite_image, view: self.sprite_view,
+            image_alloc: self.sprite_allocation.take(), staging_buffer: self.sprite_staging_buffer,
+            staging_alloc: self.sprite_staging_allocation.take(),
+        });
+        destroy_texture_resources(device, &mut alloc, &mut TextureResources {
+            sampler: self.item_sampler, image: self.item_image, view: self.item_view,
+            image_alloc: self.item_allocation.take(), staging_buffer: self.item_staging_buffer,
+            staging_alloc: self.item_staging_allocation.take(),
+        });
 
         drop(alloc);
 
@@ -700,23 +693,31 @@ fn build_item_atlas(
     (ItemAtlas { regions }, image, view, allocation, staging_buffer, Some(staging_allocation))
 }
 
+struct TextureResources {
+    sampler: vk::Sampler,
+    image: vk::Image,
+    view: vk::ImageView,
+    image_alloc: Option<Allocation>,
+    staging_buffer: vk::Buffer,
+    staging_alloc: Option<Allocation>,
+}
+
 fn destroy_texture_resources(
     device: &ash::Device,
     alloc: &mut gpu_allocator::vulkan::Allocator,
-    sampler: vk::Sampler, image: vk::Image, view: vk::ImageView,
-    image_alloc: &mut Option<Allocation>,
-    staging_buffer: vk::Buffer, staging_alloc: &mut Option<Allocation>,
+    res: &mut TextureResources,
 ) {
     unsafe {
-        device.destroy_sampler(sampler, None);
-        device.destroy_image_view(view, None);
+        device.destroy_sampler(res.sampler, None);
+        device.destroy_image_view(res.view, None);
     }
-    if let Some(a) = image_alloc.take() { alloc.free(a).ok(); }
-    unsafe { device.destroy_image(image, None) };
-    if let Some(a) = staging_alloc.take() { alloc.free(a).ok(); }
-    unsafe { device.destroy_buffer(staging_buffer, None) };
+    if let Some(a) = res.image_alloc.take() { alloc.free(a).ok(); }
+    unsafe { device.destroy_image(res.image, None) };
+    if let Some(a) = res.staging_alloc.take() { alloc.free(a).ok(); }
+    unsafe { device.destroy_buffer(res.staging_buffer, None) };
 }
 
+#[allow(clippy::too_many_arguments)]
 fn blit_image(
     dst: &mut [u8], dst_stride: u32,
     src: &[u8], src_stride: u32,
@@ -733,6 +734,7 @@ fn blit_image(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_quad(
     verts: &mut Vec<Vertex>,
     x: f32, y: f32, w: f32, h: f32,
@@ -782,6 +784,7 @@ fn push_icon_glyph(verts: &mut Vec<Vertex>, atlas: &FontAtlas, cx: f32, cy: f32,
     push_quad(verts, cx - gw / 2.0, cy - gh / 2.0, gw, gh, g.u0, g.v0, g.u1, g.v1, color, 1.0, [0.0, 0.0], 0.0);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_textured_quad(verts: &mut Vec<Vertex>, x: f32, y: f32, w: f32, h: f32, region: &SpriteRegion, tint: [f32; 4], mode: f32) {
     push_quad(verts, x, y, w, h, region.u0, region.v0, region.u1, region.v1, tint, mode, [0.0, 0.0], 0.0);
 }

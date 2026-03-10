@@ -49,6 +49,9 @@ pub enum NetworkEvent {
         pos: BlockPos,
         state: BlockState,
     },
+    BlockChangedAck {
+        seq: u32,
+    },
     SectionBlocksUpdate {
         updates: Vec<(BlockPos, BlockState)>,
     },

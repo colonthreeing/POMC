@@ -6,6 +6,7 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, 
 use gpu_allocator::MemoryLocation;
 
 use super::context::ContextError;
+use super::util;
 
 #[allow(dead_code)]
 pub struct SwapchainState {
@@ -22,6 +23,7 @@ pub struct SwapchainState {
 }
 
 impl SwapchainState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &ash::Device,
         surface_loader: &surface::Instance,
@@ -53,7 +55,9 @@ impl SwapchainState {
             .copied()
             .unwrap_or(formats[0]);
 
-        let present_mode = if present_modes.contains(&vk::PresentModeKHR::FIFO) {
+        let present_mode = if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
+            vk::PresentModeKHR::MAILBOX
+        } else if present_modes.contains(&vk::PresentModeKHR::FIFO) {
             vk::PresentModeKHR::FIFO
         } else {
             present_modes[0]
@@ -109,13 +113,7 @@ impl SwapchainState {
                     .image(img)
                     .view_type(vk::ImageViewType::TYPE_2D)
                     .format(format.format)
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    });
+                    .subresource_range(util::COLOR_SUBRESOURCE_RANGE);
                 unsafe { device.create_image_view(&view_info, None) }
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -225,13 +223,7 @@ fn create_depth_resources(
         .image(image)
         .view_type(vk::ImageViewType::TYPE_2D)
         .format(depth_format)
-        .subresource_range(vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::DEPTH,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        });
+        .subresource_range(util::DEPTH_SUBRESOURCE_RANGE);
     let view = unsafe { device.create_image_view(&view_info, None)? };
 
     Ok((image, view, allocation))

@@ -38,8 +38,6 @@ impl ChunkBufferStore {
             return;
         }
 
-        self.remove(device, allocator, &mesh.pos);
-
         let vertex_bytes = bytemuck::cast_slice(&mesh.vertices);
         let index_bytes = bytemuck::cast_slice(&mesh.indices);
 
@@ -48,7 +46,7 @@ impl ChunkBufferStore {
         let (index_buffer, index_alloc) =
             create_device_buffer(device, allocator, index_bytes, vk::BufferUsageFlags::INDEX_BUFFER);
 
-        self.meshes.insert(
+        if let Some(old) = self.meshes.insert(
             mesh.pos,
             ChunkMesh {
                 vertex_buffer,
@@ -57,7 +55,9 @@ impl ChunkBufferStore {
                 index_alloc,
                 index_count: mesh.indices.len() as u32,
             },
-        );
+        ) {
+            destroy_mesh(device, allocator, old);
+        }
     }
 
     pub fn remove(

@@ -3,7 +3,7 @@ use glam::{Mat4, Vec3};
 use crate::window::input::InputState;
 
 const UP: Vec3 = Vec3::Y;
-const DEFAULT_FOV: f32 = 1.2217;
+pub const DEFAULT_FOV: f32 = 1.2217;
 const NEAR: f32 = 0.1;
 const FAR: f32 = 1000.0;
 const SENSITIVITY: f32 = 0.003;

@@ -27,12 +27,24 @@ pub fn build_hud(
     selected_slot: u8,
     health: f32,
     food: u32,
+    fps: Option<u32>,
 ) {
     let gs = gui_scale(screen_w, screen_h);
     let cx = screen_w / 2.0;
     let cy = screen_h / 2.0;
 
     build_crosshair(elements, cx, cy);
+
+    if let Some(fps) = fps {
+        let fs = super::common::FONT_SIZE * gs;
+        elements.push(MenuElement::Text {
+            x: 4.0 * gs, y: 4.0 * gs,
+            text: format!("{fps} fps"),
+            scale: fs,
+            color: WHITE,
+            centered: false,
+        });
+    }
 
     let hotbar_w = HOTBAR_W * gs;
     let hotbar_h = HOTBAR_H * gs;
@@ -72,6 +84,7 @@ fn build_crosshair(elements: &mut Vec<MenuElement>, cx: f32, cy: f32) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_status_bar(
     elements: &mut Vec<MenuElement>,
     x_start: f32, y: f32,

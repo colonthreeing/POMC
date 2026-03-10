@@ -3,10 +3,8 @@ use super::common::{self, WHITE};
 
 const FULL_W: f32 = 204.0;
 const HALF_W: f32 = 98.0;
-const BTN_H: f32 = 20.0;
 const PADDING: f32 = 4.0;
 const MENU_PADDING_TOP: f32 = 50.0;
-const FONT_SIZE: f32 = 8.0;
 
 pub enum PauseAction {
     None,
@@ -23,13 +21,13 @@ pub fn build_pause_menu(
     gs: f32,
 ) -> PauseAction {
     let mut action = PauseAction::None;
-    let fs = FONT_SIZE * gs;
+    let fs = common::FONT_SIZE * gs;
 
     common::push_overlay(elements, screen_w, screen_h, 0.47);
 
     let full_w = FULL_W * gs;
     let half_w = HALF_W * gs;
-    let btn_h = BTN_H * gs;
+    let btn_h = common::BTN_H * gs;
     let pad = PADDING * gs;
     let top_pad = MENU_PADDING_TOP * gs;
 

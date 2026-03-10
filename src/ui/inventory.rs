@@ -110,6 +110,7 @@ pub fn build_inventory(
     clicked && outside
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_slot(
     elements: &mut Vec<MenuElement>,
     ox: f32, oy: f32, scale: f32, fs: f32,

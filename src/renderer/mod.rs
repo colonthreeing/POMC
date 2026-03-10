@@ -6,6 +6,8 @@ pub(crate) mod shader;
 mod swapchain;
 pub(crate) mod util;
 
+pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -16,11 +18,13 @@ use thiserror::Error;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
+use azalea_core::position::BlockPos;
 use camera::{Camera, CameraUniform};
 use chunk::atlas::TextureAtlas;
 use chunk::buffer::ChunkBufferStore;
 use chunk::mesher::{ChunkMeshData, MeshDispatcher};
 use context::VulkanContext;
+use pipelines::block_overlay::BlockOverlayPipeline;
 use pipelines::chunk::ChunkPipeline;
 use pipelines::hand::HandPipeline;
 use pipelines::menu_overlay::{MenuElement, MenuOverlayPipeline};
@@ -41,7 +45,11 @@ pub enum RendererError {
 }
 
 enum RenderMode {
-    World { overlay: Vec<MenuElement> },
+    World {
+        overlay: Vec<MenuElement>,
+        swing_progress: f32,
+        destroy_info: Option<(BlockPos, u32)>,
+    },
     MainMenu { scroll: f32, blur: f32, elements: Vec<MenuElement> },
 }
 
@@ -53,6 +61,7 @@ pub struct Renderer {
     atlas: TextureAtlas,
     chunk_pipeline: ChunkPipeline,
     hand_pipeline: HandPipeline,
+    block_overlay_pipeline: BlockOverlayPipeline,
     panorama_pipeline: PanoramaPipeline,
     menu_pipeline: MenuOverlayPipeline,
     chunk_buffers: ChunkBufferStore,
@@ -114,6 +123,16 @@ impl Renderer {
             asset_index,
         );
 
+        let block_overlay_pipeline = BlockOverlayPipeline::new(
+            &ctx.device,
+            ctx.graphics_queue,
+            ctx.command_pool,
+            swapchain_state.render_pass,
+            &ctx.allocator,
+            assets_dir,
+            asset_index,
+        );
+
         let panorama_pipeline = PanoramaPipeline::new(
             &ctx.device,
             ctx.graphics_queue,
@@ -144,6 +163,7 @@ impl Renderer {
             atlas,
             chunk_pipeline,
             hand_pipeline,
+            block_overlay_pipeline,
             panorama_pipeline,
             menu_pipeline,
             chunk_buffers,
@@ -195,6 +215,7 @@ impl Renderer {
         );
 
         self.hand_pipeline.recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
+        self.block_overlay_pipeline.recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.panorama_pipeline.recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.menu_pipeline.recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
 
@@ -257,8 +278,15 @@ impl Renderer {
         window: &Window,
         hide_cursor: bool,
         overlay: Vec<MenuElement>,
+        swing_progress: f32,
+        destroy_info: Option<(BlockPos, u32)>,
     ) -> Result<(), RendererError> {
-        self.render_frame(window, hide_cursor, [0.529, 0.808, 0.922, 1.0], RenderMode::World { overlay })
+        self.render_frame(
+            window,
+            hide_cursor,
+            [0.529, 0.808, 0.922, 1.0],
+            RenderMode::World { overlay, swing_progress, destroy_info },
+        )
     }
 
     pub fn render_menu(
@@ -328,6 +356,7 @@ impl Renderer {
         if matches!(mode, RenderMode::World { .. }) {
             let uniform = CameraUniform::from_camera(&self.camera);
             self.chunk_pipeline.update_camera(frame, &uniform);
+            self.block_overlay_pipeline.update_camera(frame, &uniform);
         }
 
         if hide_cursor {
@@ -394,9 +423,15 @@ impl Renderer {
             let sh = self.swapchain.extent.height as f32;
 
             match &mode {
-                RenderMode::World { overlay } => {
+                RenderMode::World { overlay, swing_progress, destroy_info } => {
                     self.chunk_pipeline.bind(&self.ctx.device, cmd, frame);
                     self.chunk_buffers.draw(&self.ctx.device, cmd);
+
+                    if let Some((block_pos, stage)) = destroy_info {
+                        self.block_overlay_pipeline.draw(
+                            &self.ctx.device, cmd, frame, block_pos, *stage,
+                        );
+                    }
 
                     let clear_attachment = vk::ClearAttachment {
                         aspect_mask: vk::ImageAspectFlags::DEPTH,
@@ -425,6 +460,7 @@ impl Renderer {
                         cmd,
                         frame,
                         aspect,
+                        *swing_progress,
                     );
 
                     self.menu_pipeline.draw(&self.ctx.device, cmd, sw, sh, overlay);
@@ -487,6 +523,8 @@ impl Drop for Renderer {
         self.chunk_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.hand_pipeline
+            .destroy(&self.ctx.device, &self.ctx.allocator);
+        self.block_overlay_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.panorama_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);

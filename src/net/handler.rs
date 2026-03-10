@@ -106,7 +106,9 @@ pub fn handle_game_packet(
             }).collect();
             let _ = event_tx.try_send(NetworkEvent::SectionBlocksUpdate { updates });
         }
-        ClientboundGamePacket::BlockChangedAck(_) => {}
+        ClientboundGamePacket::BlockChangedAck(p) => {
+            let _ = event_tx.try_send(NetworkEvent::BlockChangedAck { seq: p.seq });
+        }
         ClientboundGamePacket::Disconnect(p) => {
             log::warn!("Disconnected: {}", p.reason);
             let _ = event_tx.try_send(NetworkEvent::Disconnected {
