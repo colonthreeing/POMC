@@ -10,6 +10,7 @@ pub struct InputState {
     left_click: ClickState,
     right_click: ClickState,
     cursor_pos: (f32, f32),
+    cursor_moved: bool,
     typed_chars: Vec<char>,
     menu_scroll: f32,
     backspace_pressed: bool,
@@ -36,6 +37,7 @@ impl InputState {
             left_click: ClickState::default(),
             right_click: ClickState::default(),
             cursor_pos: (0.0, 0.0),
+            cursor_moved: false,
             typed_chars: Vec::new(),
             menu_scroll: 0.0,
             backspace_pressed: false,
@@ -187,10 +189,16 @@ impl InputState {
         self.left_click.just_released = false;
         self.right_click.just_pressed = false;
         self.right_click.just_released = false;
+        self.cursor_moved = false;
     }
 
     pub fn on_cursor_moved(&mut self, x: f32, y: f32) {
         self.cursor_pos = (x, y);
+        self.cursor_moved = true;
+    }
+
+    pub fn cursor_moved_this_frame(&self) -> bool {
+        self.cursor_moved
     }
 
     pub fn cursor_pos(&self) -> (f32, f32) {

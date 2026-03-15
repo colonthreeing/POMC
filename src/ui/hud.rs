@@ -12,12 +12,17 @@ const SLOT_STRIDE: f32 = 20.0;
 const ICON_SIZE: f32 = 9.0;
 const ICON_STRIDE: f32 = 8.0;
 
-pub fn gui_scale(screen_w: f32, screen_h: f32) -> f32 {
+pub fn max_gui_scale(screen_w: f32, screen_h: f32) -> u32 {
     let mut scale = 1;
     while (screen_w / (scale + 1) as f32) >= 320.0 && (screen_h / (scale + 1) as f32) >= 240.0 {
         scale += 1;
     }
-    scale as f32
+    scale
+}
+
+pub fn gui_scale(screen_w: f32, screen_h: f32, setting: u32) -> f32 {
+    let max = max_gui_scale(screen_w, screen_h);
+    if setting == 0 { max as f32 } else { setting.min(max) as f32 }
 }
 
 pub fn build_hud(
@@ -28,8 +33,9 @@ pub fn build_hud(
     health: f32,
     food: u32,
     fps: Option<u32>,
+    gui_scale_setting: u32,
 ) {
-    let gs = gui_scale(screen_w, screen_h);
+    let gs = gui_scale(screen_w, screen_h, gui_scale_setting);
     let cx = screen_w / 2.0;
     let cy = screen_h / 2.0;
 

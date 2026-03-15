@@ -159,6 +159,7 @@ pub struct MainMenu {
     auth_status: Arc<Mutex<AuthStatus>>,
     auth_account: Option<AuthAccount>,
     cache_file: PathBuf,
+    pub gui_scale_setting: u32,
 }
 
 impl MainMenu {
@@ -194,6 +195,7 @@ impl MainMenu {
             auth_status: Arc::new(Mutex::new(AuthStatus::Idle)),
             auth_account,
             cache_file,
+            gui_scale_setting: 0,
         }
     }
 
@@ -301,7 +303,7 @@ impl MainMenu {
         input: &MenuInput,
         text_width_fn: impl Fn(&str, f32) -> f32,
     ) -> MainMenuResult {
-        let gs = (screen_h / 400.0).max(1.0);
+        let gs = crate::ui::hud::gui_scale(screen_w, screen_h, self.gui_scale_setting);
         let panel_w = 220.0 * gs;
         let btn_h = 30.0 * gs;
         let btn_gap = 4.0 * gs;
@@ -680,7 +682,7 @@ impl MainMenu {
             return empty_result(2.0);
         }
 
-        let gs = (screen_h / 400.0).max(1.0);
+        let gs = crate::ui::hud::gui_scale(screen_w, screen_h, self.gui_scale_setting);
         let title_size = 18.0 * gs;
         let body_size = 10.0 * gs;
         let btn_w = 180.0 * gs;
@@ -793,7 +795,7 @@ impl MainMenu {
             return empty_result(2.0);
         };
 
-        let gs = (screen_h / 400.0).max(1.0);
+        let gs = crate::ui::hud::gui_scale(screen_w, screen_h, self.gui_scale_setting);
         let title_size = 18.0 * gs;
         let body_size = 11.0 * gs;
         let btn_w = 160.0 * gs;
@@ -981,7 +983,7 @@ impl MainMenu {
         input: &MenuInput,
         text_width_fn: &dyn Fn(&str, f32) -> f32,
     ) -> MainMenuResult {
-        let gs = (screen_h / 400.0).max(1.0);
+        let gs = crate::ui::hud::gui_scale(screen_w, screen_h, self.gui_scale_setting);
         let header_h = HEADER_H * gs;
         let sep_h = SEP_H * gs;
         let entry_h = ENTRY_H * gs;
@@ -1281,7 +1283,7 @@ impl MainMenu {
             return empty_result(2.0);
         };
 
-        let gs = (screen_h / 400.0).max(1.0);
+        let gs = crate::ui::hud::gui_scale(screen_w, screen_h, self.gui_scale_setting);
         let fs = common::FONT_SIZE * gs;
         let form_w = FORM_W * gs;
         let btn_h = common::BTN_H * gs;
@@ -1374,7 +1376,7 @@ impl MainMenu {
         input: &MenuInput,
         text_width_fn: &dyn Fn(&str, f32) -> f32,
     ) -> MainMenuResult {
-        let gs = (screen_h / 400.0).max(1.0);
+        let gs = crate::ui::hud::gui_scale(screen_w, screen_h, self.gui_scale_setting);
         let fs = common::FONT_SIZE * gs;
         let form_w = FORM_W * gs;
         let btn_h = common::BTN_H * gs;
@@ -1493,7 +1495,7 @@ impl MainMenu {
         input: &MenuInput,
         text_width_fn: &dyn Fn(&str, f32) -> f32,
     ) -> MainMenuResult {
-        let gs = (screen_h / 400.0).max(1.0);
+        let gs = crate::ui::hud::gui_scale(screen_w, screen_h, self.gui_scale_setting);
         let fs = common::FONT_SIZE * gs;
         let form_w = FORM_W * gs;
         let btn_h = common::BTN_H * gs;
@@ -1692,7 +1694,7 @@ impl MainMenu {
             _ => return empty_result(2.0),
         };
 
-        let gs = (screen_h / 400.0).max(1.0);
+        let gs = crate::ui::hud::gui_scale(screen_w, screen_h, self.gui_scale_setting);
         let title_size = 18.0 * gs;
         let body_size = 11.0 * gs;
         let btn_w = 160.0 * gs;
@@ -1784,12 +1786,16 @@ impl MainMenu {
         let rd = format!("Render Distance: {} chunks", 12);
         let sd = format!("Simulation Distance: {} chunks", 12);
         let mf = format!("Max Framerate: {} fps", 120);
-        let gui = format!("GUI Scale: {}", 3);
+        let gui_label = if self.gui_scale_setting == 0 {
+            "GUI Scale: Auto".to_string()
+        } else {
+            format!("GUI Scale: {}", self.gui_scale_setting)
+        };
         let rows: Vec<[&str; 2]> = vec![
             [&rd, &sd],
             ["Graphics: Fancy", "Smooth Lighting: ON"],
             [&mf, "VSync: OFF"],
-            ["View Bobbing: ON", &gui],
+            ["View Bobbing: ON", &gui_label],
             ["Attack Indicator: Crosshair", "Brightness: 50%"],
             ["Clouds: Fancy", "Fullscreen: OFF"],
             ["Particles: All", "Mipmap Levels: 4"],
@@ -1823,7 +1829,7 @@ impl MainMenu {
             return empty_result(2.0);
         }
 
-        let gs = (sh / 400.0).max(1.0);
+        let gs = crate::ui::hud::gui_scale(sw, sh, self.gui_scale_setting);
         let fs = common::FONT_SIZE * gs;
         let btn_h = common::BTN_H * gs;
         let gap = BTN_GAP * gs;
@@ -1880,6 +1886,10 @@ impl MainMenu {
                     if let Some((_, target)) = nav.iter().find(|(l, _)| *l == *label) {
                         self.screen = target.clone_screen();
                     }
+                    if label.starts_with("GUI Scale:") {
+                        let max = crate::ui::hud::max_gui_scale(sw, sh);
+                        self.gui_scale_setting = (self.gui_scale_setting + 1) % (max + 1);
+                    }
                 }
             }
         }
@@ -1923,7 +1933,7 @@ impl MainMenu {
             return empty_result(2.0);
         }
 
-        let gs = (sh / 400.0).max(1.0);
+        let gs = crate::ui::hud::gui_scale(sw, sh, self.gui_scale_setting);
         let fs = common::FONT_SIZE * gs;
         let btn_h = common::BTN_H * gs;
         let gap = BTN_GAP * gs;

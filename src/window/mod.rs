@@ -722,7 +722,9 @@ impl ApplicationHandler for App {
                                 } else {
                                     winit::window::CursorIcon::Default
                                 };
-                                window.set_cursor(cursor_icon);
+                                if self.input.cursor_moved_this_frame() {
+                                    window.set_cursor(cursor_icon);
+                                }
 
                                 if let Err(e) = renderer.render_menu(
                                     window,
@@ -771,7 +773,7 @@ impl ApplicationHandler for App {
                             {
                                 let sw = renderer.screen_width() as f32;
                                 let sh = renderer.screen_height() as f32;
-                                let gs = (sh / 400.0).max(1.0);
+                                let gs = hud::gui_scale(sw, sh, self.menu.gui_scale_setting);
                                 let fs = 11.0 * gs;
                                 let btn_h = 30.0 * gs;
                                 let btn_w = 160.0 * gs;
@@ -896,7 +898,7 @@ impl ApplicationHandler for App {
 
                                 let sw = renderer.screen_width() as f32;
                                 let sh = renderer.screen_height() as f32;
-                                let gs = hud::gui_scale(sw, sh);
+                                let gs = hud::gui_scale(sw, sh, self.menu.gui_scale_setting);
 
                                 let mut elements: Vec<MenuElement> = Vec::new();
                                 let hide_cursor = !self.paused
@@ -917,6 +919,7 @@ impl ApplicationHandler for App {
                                     self.player.health,
                                     self.player.food,
                                     fps,
+                                    self.menu.gui_scale_setting,
                                 );
 
                                 if self.paused {
