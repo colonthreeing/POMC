@@ -26,7 +26,6 @@ use chunk::mesher::{ChunkMeshData, MeshDispatcher};
 use context::VulkanContext;
 use pipelines::block_overlay::BlockOverlayPipeline;
 use pipelines::chunk::ChunkPipeline;
-use pipelines::cull::CullPipeline;
 use pipelines::hand::HandPipeline;
 use pipelines::menu_overlay::{MenuElement, MenuOverlayPipeline};
 use pipelines::panorama::PanoramaPipeline;
@@ -67,7 +66,6 @@ pub struct Renderer {
     registry: BlockRegistry,
     atlas: TextureAtlas,
     chunk_pipeline: ChunkPipeline,
-    cull_pipeline: CullPipeline,
     hand_pipeline: HandPipeline,
     block_overlay_pipeline: BlockOverlayPipeline,
     sky_pipeline: SkyPipeline,
@@ -242,7 +240,6 @@ impl Renderer {
 
         splash(&mut menu_pipeline, 0.9, "Finalizing...");
 
-        let cull_pipeline = CullPipeline::new(&ctx.device, &ctx.allocator);
 
         let chunk_buffers = ChunkBufferStore::new(&ctx.device, &ctx.allocator);
 
@@ -253,7 +250,6 @@ impl Renderer {
             registry,
             atlas,
             chunk_pipeline,
-            cull_pipeline,
             hand_pipeline,
             block_overlay_pipeline,
             sky_pipeline,
@@ -848,8 +844,6 @@ impl Drop for Renderer {
         self.chunk_buffers
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.chunk_pipeline
-            .destroy(&self.ctx.device, &self.ctx.allocator);
-        self.cull_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.hand_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);

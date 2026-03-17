@@ -28,7 +28,6 @@ fn main() {
         ("block_overlay.frag", shaderc::ShaderKind::Fragment),
         ("sky.vert", shaderc::ShaderKind::Vertex),
         ("sky.frag", shaderc::ShaderKind::Fragment),
-        ("cull.comp", shaderc::ShaderKind::Compute),
     ];
 
     for (file, kind) in &shaders {

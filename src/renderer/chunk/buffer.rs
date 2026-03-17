@@ -1,3 +1,5 @@
+// TODO: GPU compute frustum culling + indirect draws when view distance 32+ is needed
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

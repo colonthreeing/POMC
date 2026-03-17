@@ -147,23 +147,6 @@ pub fn create_host_buffer(
     )
 }
 
-pub fn create_gpu_buffer(
-    device: &ash::Device,
-    allocator: &Arc<Mutex<Allocator>>,
-    size: u64,
-    usage: vk::BufferUsageFlags,
-    name: &str,
-) -> (vk::Buffer, Allocation) {
-    create_buffer(
-        device,
-        allocator,
-        size,
-        usage,
-        MemoryLocation::GpuOnly,
-        name,
-    )
-}
-
 fn create_buffer(
     device: &ash::Device,
     allocator: &Arc<Mutex<Allocator>>,
