@@ -43,6 +43,7 @@ pub struct LocalPlayer {
     pub eyes_in_water: bool,
     pub swimming: bool,
     pub air_supply: i32,
+    pub game_mode: u8,
 }
 
 impl LocalPlayer {
@@ -65,6 +66,7 @@ impl LocalPlayer {
             eyes_in_water: false,
             swimming: false,
             air_supply: MAX_AIR_SUPPLY,
+            game_mode: 0,
         }
     }
 

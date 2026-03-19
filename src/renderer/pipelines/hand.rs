@@ -243,6 +243,14 @@ impl HandPipeline {
         }
     }
 
+    pub fn skin_view(&self) -> vk::ImageView {
+        self.skin_view
+    }
+
+    pub fn skin_sampler(&self) -> vk::Sampler {
+        self.skin_sampler
+    }
+
     pub fn recreate_pipeline(&mut self, device: &ash::Device, render_pass: vk::RenderPass) {
         unsafe { device.destroy_pipeline(self.pipeline, None) };
         self.pipeline = create_pipeline(device, render_pass, self.pipeline_layout);

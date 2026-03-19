@@ -63,6 +63,15 @@ pub enum NetworkEvent {
         game_time: u64,
         day_time: u64,
     },
+    GameModeChanged {
+        game_mode: u8,
+    },
+    ServerViewDistance {
+        distance: u32,
+    },
+    ServerSimulationDistance {
+        distance: u32,
+    },
     Disconnected {
         reason: String,
     },

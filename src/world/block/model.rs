@@ -198,12 +198,19 @@ pub struct BakedModel {
     pub is_full_cube: bool,
 }
 
+#[derive(Clone)]
+pub struct MultipartEntry {
+    pub when: HashMap<String, String>,
+    pub quads: Vec<BakedQuad>,
+}
+
 const FOLIAGE_TINTED: &[&str] = &[
     "oak_leaves",
     "dark_oak_leaves",
     "jungle_leaves",
     "acacia_leaves",
     "mangrove_leaves",
+    "vine",
 ];
 
 const GRASS_TINTED: &[&str] = &[
@@ -236,11 +243,15 @@ pub fn load_all_block_textures(
     results
 }
 
+type BakedModelMap = HashMap<String, HashMap<String, BakedModel>>;
+type MultipartMap = HashMap<String, Vec<MultipartEntry>>;
+
 pub fn bake_all_models(
     assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
-) -> HashMap<String, HashMap<String, BakedModel>> {
+) -> (BakedModelMap, MultipartMap) {
     let mut results: HashMap<String, HashMap<String, BakedModel>> = HashMap::new();
+    let mut multipart_results: HashMap<String, Vec<MultipartEntry>> = HashMap::new();
     let mut model_cache = HashMap::new();
     let mut total = 0u32;
 
@@ -261,7 +272,7 @@ pub fn bake_all_models(
                 }
             }
         } else if let Some(multipart) = &blockstate.multipart {
-            let mut combined_quads = Vec::new();
+            let mut entries = Vec::new();
             for case in multipart {
                 let model_ref = case.apply.first()?;
                 let resolved =
@@ -269,18 +280,15 @@ pub fn bake_all_models(
                 if let Some(baked) =
                     bake_resolved_model(&resolved, model_ref.x, model_ref.y, has_tint)
                 {
-                    combined_quads.extend(baked.quads);
+                    let when = parse_when_condition(&case.when);
+                    entries.push(MultipartEntry {
+                        when,
+                        quads: baked.quads,
+                    });
                 }
             }
-            if !combined_quads.is_empty() {
-                let is_full_cube = check_full_cube(&combined_quads);
-                variants_map.insert(
-                    String::new(),
-                    BakedModel {
-                        quads: combined_quads,
-                        is_full_cube,
-                    },
-                );
+            if !entries.is_empty() {
+                multipart_results.insert(block_name.to_string(), entries);
             }
         }
 
@@ -292,22 +300,37 @@ pub fn bake_all_models(
 
     let mut missing_names: Vec<String> = Vec::new();
     for_each_blockstate(assets_dir, asset_index, |block_name, _| {
-        if !results.contains_key(block_name) {
+        if !results.contains_key(block_name) && !multipart_results.contains_key(block_name) {
             missing_names.push(block_name.to_string());
         }
         Some(())
     });
     missing_names.sort();
+    let baked_count = results.len() + multipart_results.len();
     log::info!(
         "Baked models for {}/{} blocks ({} missing)",
-        results.len(),
+        baked_count,
         total,
         missing_names.len()
     );
     if !missing_names.is_empty() {
         log::warn!("Missing baked models: {}", missing_names.join(", "));
     }
-    results
+    (results, multipart_results)
+}
+
+fn parse_when_condition(when: &Option<serde_json::Value>) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    if let Some(serde_json::Value::Object(map)) = when {
+        for (key, value) in map {
+            if let serde_json::Value::String(s) = value {
+                result.insert(key.clone(), s.clone());
+            } else if let serde_json::Value::Bool(b) = value {
+                result.insert(key.clone(), b.to_string());
+            }
+        }
+    }
+    result
 }
 
 fn for_each_blockstate(

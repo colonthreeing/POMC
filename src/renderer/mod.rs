@@ -30,6 +30,7 @@ use pipelines::chunk::ChunkPipeline;
 use pipelines::hand::HandPipeline;
 use pipelines::menu_overlay::{MenuElement, MenuOverlayPipeline};
 use pipelines::panorama::PanoramaPipeline;
+use pipelines::skin_preview::SkinPreviewPipeline;
 pub use pipelines::sky::{SkyPipeline, SkyState};
 use swapchain::SwapchainState;
 
@@ -57,6 +58,7 @@ enum RenderMode {
         scroll: f32,
         blur: f32,
         elements: Vec<MenuElement>,
+        cursor: (f32, f32),
     },
 }
 
@@ -73,6 +75,7 @@ pub struct Renderer {
     panorama_pipeline: PanoramaPipeline,
     menu_pipeline: MenuOverlayPipeline,
     blur_pipeline: BlurPipeline,
+    skin_preview: SkinPreviewPipeline,
     chunk_buffers: ChunkBufferStore,
     swapchain_dirty: bool,
     width: u32,
@@ -201,6 +204,14 @@ impl Renderer {
 
         splash(&mut menu_pipeline, 0.9, "Finalizing...");
 
+        let skin_preview = SkinPreviewPipeline::new(
+            &ctx.device,
+            swapchain_state.render_pass,
+            &ctx.allocator,
+            hand_pipeline.skin_view(),
+            hand_pipeline.skin_sampler(),
+        );
+
         let blur_pipeline = BlurPipeline::new(
             &ctx.device,
             &ctx.allocator,
@@ -224,6 +235,7 @@ impl Renderer {
             panorama_pipeline,
             menu_pipeline,
             blur_pipeline,
+            skin_preview,
             chunk_buffers,
             swapchain_dirty: false,
             width: size.width.max(1),
@@ -442,6 +454,8 @@ impl Renderer {
             .recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.menu_pipeline
             .recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
+        self.skin_preview
+            .recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.blur_pipeline.resize(
             &self.ctx.device,
             &self.ctx.allocator,
@@ -553,6 +567,7 @@ impl Renderer {
         scroll: f32,
         blur: f32,
         elements: Vec<MenuElement>,
+        cursor: (f32, f32),
     ) -> Result<(), RendererError> {
         self.render_frame(
             window,
@@ -562,6 +577,7 @@ impl Renderer {
                 scroll,
                 blur,
                 elements,
+                cursor,
             },
         )
     }
@@ -579,6 +595,10 @@ impl Renderer {
             assets_dir,
             asset_index,
         );
+    }
+
+    pub fn trigger_skin_swing(&mut self) {
+        self.skin_preview.trigger_swing();
     }
 
     pub fn menu_text_width(&self, text: &str, scale: f32) -> f32 {
@@ -605,8 +625,6 @@ impl Renderer {
         unsafe {
             self.ctx.device.wait_for_fences(&[fence], true, u64::MAX)?;
         }
-
-        self.chunk_buffers.begin_frame();
 
         let image_index = match unsafe {
             self.ctx.swapchain_loader.acquire_next_image(
@@ -781,6 +799,7 @@ impl Renderer {
                     scroll,
                     blur,
                     elements,
+                    cursor,
                 } => {
                     let aspect = sw / sh.max(1.0);
                     self.panorama_pipeline
@@ -822,6 +841,19 @@ impl Renderer {
                         self.ctx.device.cmd_set_viewport(cmd, 0, &[viewport]);
                         self.ctx.device.cmd_set_scissor(cmd, 0, &[scissor]);
                     }
+
+                    self.skin_preview.draw(
+                        &self.ctx.device,
+                        cmd,
+                        frame,
+                        aspect,
+                        0.7,
+                        0.5,
+                        cursor.0,
+                        cursor.1,
+                        sw,
+                        sh,
+                    );
 
                     self.menu_pipeline
                         .draw(&self.ctx.device, cmd, sw, sh, elements);
@@ -891,6 +923,8 @@ impl Drop for Renderer {
         self.menu_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.blur_pipeline
+            .destroy(&self.ctx.device, &self.ctx.allocator);
+        self.skin_preview
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.atlas.destroy(&self.ctx.device, &self.ctx.allocator);
         self.swapchain.destroy(

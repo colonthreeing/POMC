@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use ash::vk;
@@ -10,11 +10,11 @@ use crate::renderer::shader;
 use crate::renderer::util;
 use crate::renderer::MAX_FRAMES_IN_FLIGHT;
 
-pub const MAX_CHUNKS: usize = 8192;
-const INITIAL_VERTICES: u32 = 4_000_000;
-const INITIAL_INDICES: u32 = 6_000_000;
-const VERTEX_SIZE: usize = std::mem::size_of::<ChunkVertex>();
-const INDEX_SIZE: usize = std::mem::size_of::<u32>();
+const BUCKET_VERTICES: u32 = 32768;
+const BUCKET_INDICES: u32 = 49152;
+const TOTAL_BUCKETS: u32 = 4096;
+const VERTEX_SIZE: u64 = std::mem::size_of::<ChunkVertex>() as u64;
+const INDEX_SIZE: u64 = std::mem::size_of::<u32>() as u64;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -52,122 +52,78 @@ struct FrustumData {
     _pad: [u32; 3],
 }
 
-struct ChunkSlot {
-    vertex_offset: u32,
-    vertex_count: u32,
-    index_offset: u32,
-    index_count: u32,
+struct ChunkAlloc {
+    buckets: Vec<u32>,
+    index_counts: Vec<u32>,
     aabb: ChunkAABB,
-}
-
-struct PendingFree {
-    vertex_offset: u32,
-    vertex_count: u32,
-    index_offset: u32,
-    index_count: u32,
-    frame_retired: u64,
-}
-
-struct FreeList {
-    free: Vec<(u32, u32)>,
-}
-
-impl FreeList {
-    fn new(capacity: u32) -> Self {
-        Self {
-            free: vec![(0, capacity)],
-        }
-    }
-
-    fn alloc(&mut self, count: u32) -> Option<u32> {
-        for i in 0..self.free.len() {
-            if self.free[i].1 >= count {
-                let offset = self.free[i].0;
-                if self.free[i].1 == count {
-                    self.free.remove(i);
-                } else {
-                    self.free[i].0 += count;
-                    self.free[i].1 -= count;
-                }
-                return Some(offset);
-            }
-        }
-        None
-    }
-
-    fn free(&mut self, offset: u32, count: u32) {
-        let pos = self.free.partition_point(|&(o, _)| o < offset);
-        self.free.insert(pos, (offset, count));
-        if pos + 1 < self.free.len() && self.free[pos].0 + self.free[pos].1 == self.free[pos + 1].0
-        {
-            self.free[pos].1 += self.free[pos + 1].1;
-            self.free.remove(pos + 1);
-        }
-        if pos > 0 && self.free[pos - 1].0 + self.free[pos - 1].1 == self.free[pos].0 {
-            self.free[pos - 1].1 += self.free[pos].1;
-            self.free.remove(pos);
-        }
-    }
 }
 
 pub struct ChunkBufferStore {
     vertex_buffer: vk::Buffer,
-    vertex_allocation: Allocation,
+    vertex_alloc: Allocation,
     index_buffer: vk::Buffer,
-    index_allocation: Allocation,
-    vertex_free: FreeList,
-    index_free: FreeList,
+    index_alloc: Allocation,
 
-    chunks: HashMap<ChunkPos, ChunkSlot>,
-    pending_frees: Vec<PendingFree>,
-    global_frame: u64,
+    free_buckets: VecDeque<u32>,
+    chunks: HashMap<ChunkPos, ChunkAlloc>,
+    cached_meta: Vec<ChunkMeta>,
+    meta_dirty: bool,
 
     compute_pipeline: vk::Pipeline,
     compute_layout: vk::PipelineLayout,
-    compute_descriptor_layout: vk::DescriptorSetLayout,
+    compute_desc_layout: vk::DescriptorSetLayout,
     compute_pool: vk::DescriptorPool,
     compute_sets: Vec<vk::DescriptorSet>,
 
-    metadata_buffers: Vec<vk::Buffer>,
-    metadata_allocations: Vec<Allocation>,
+    meta_buffers: Vec<vk::Buffer>,
+    meta_allocs: Vec<Allocation>,
     indirect_buffers: Vec<vk::Buffer>,
-    indirect_allocations: Vec<Allocation>,
-    draw_count_buffers: Vec<vk::Buffer>,
-    draw_count_allocations: Vec<Allocation>,
+    indirect_allocs: Vec<Allocation>,
+    count_buffers: Vec<vk::Buffer>,
+    count_allocs: Vec<Allocation>,
     frustum_buffers: Vec<vk::Buffer>,
-    frustum_allocations: Vec<Allocation>,
+    frustum_allocs: Vec<Allocation>,
 }
 
 impl ChunkBufferStore {
     pub fn new(device: &ash::Device, allocator: &Arc<Mutex<Allocator>>) -> Self {
-        let (vertex_buffer, vertex_allocation) = util::create_host_buffer(
+        let vertex_size = TOTAL_BUCKETS as u64 * BUCKET_VERTICES as u64 * VERTEX_SIZE;
+        let index_size = TOTAL_BUCKETS as u64 * BUCKET_INDICES as u64 * INDEX_SIZE;
+
+        let (vertex_buffer, vertex_alloc) = util::create_host_buffer(
             device,
             allocator,
-            INITIAL_VERTICES as u64 * VERTEX_SIZE as u64,
+            vertex_size,
             vk::BufferUsageFlags::VERTEX_BUFFER,
-            "vertex_mega",
+            "vertex_pool",
         );
-        let (index_buffer, index_allocation) = util::create_host_buffer(
+        let (index_buffer, index_alloc) = util::create_host_buffer(
             device,
             allocator,
-            INITIAL_INDICES as u64 * INDEX_SIZE as u64,
+            index_size,
             vk::BufferUsageFlags::INDEX_BUFFER,
-            "index_mega",
+            "index_pool",
         );
 
-        let meta_size = (MAX_CHUNKS * std::mem::size_of::<ChunkMeta>()) as u64;
-        let indirect_size = (MAX_CHUNKS * std::mem::size_of::<DrawCommand>()) as u64;
-        let count_size = std::mem::size_of::<u32>() as u64;
+        let mut free_buckets = VecDeque::with_capacity(TOTAL_BUCKETS as usize);
+        for i in 0..TOTAL_BUCKETS {
+            free_buckets.push_back(i);
+        }
+
+        let max_meta = (TOTAL_BUCKETS * 2) as u64;
+        let meta_size = max_meta * std::mem::size_of::<ChunkMeta>() as u64;
+        let indirect_size = max_meta * std::mem::size_of::<DrawCommand>() as u64;
+        let count_size = 4u64;
         let frustum_size = std::mem::size_of::<FrustumData>() as u64;
 
-        let mut metadata_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut metadata_allocations = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut meta_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut meta_allocs = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut indirect_allocations = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut draw_count_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut draw_count_allocations = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut indirect_allocs = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut count_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut count_allocs = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut frustum_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut frustum_allocations = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut frustum_allocs = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             let (b, a) = util::create_host_buffer(
@@ -177,8 +133,8 @@ impl ChunkBufferStore {
                 vk::BufferUsageFlags::STORAGE_BUFFER,
                 "chunk_meta",
             );
-            metadata_buffers.push(b);
-            metadata_allocations.push(a);
+            meta_buffers.push(b);
+            meta_allocs.push(a);
 
             let (b, a) = util::create_host_buffer(
                 device,
@@ -188,7 +144,7 @@ impl ChunkBufferStore {
                 "indirect_cmds",
             );
             indirect_buffers.push(b);
-            indirect_allocations.push(a);
+            indirect_allocs.push(a);
 
             let (b, a) = util::create_host_buffer(
                 device,
@@ -197,8 +153,8 @@ impl ChunkBufferStore {
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER,
                 "draw_count",
             );
-            draw_count_buffers.push(b);
-            draw_count_allocations.push(a);
+            count_buffers.push(b);
+            count_allocs.push(a);
 
             let (b, a) = util::create_host_buffer(
                 device,
@@ -208,11 +164,11 @@ impl ChunkBufferStore {
                 "frustum_ubo",
             );
             frustum_buffers.push(b);
-            frustum_allocations.push(a);
+            frustum_allocs.push(a);
         }
 
-        let compute_descriptor_layout = create_cull_descriptor_layout(device);
-        let set_layouts = [compute_descriptor_layout];
+        let compute_desc_layout = create_cull_desc_layout(device);
+        let set_layouts = [compute_desc_layout];
         let layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
         let compute_layout = unsafe { device.create_pipeline_layout(&layout_info, None) }
             .expect("failed to create compute pipeline layout");
@@ -223,13 +179,12 @@ impl ChunkBufferStore {
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(comp_module)
             .name(c"main");
-        let pipeline_info = [vk::ComputePipelineCreateInfo::default()
+        let pipe_info = [vk::ComputePipelineCreateInfo::default()
             .stage(stage)
             .layout(compute_layout)];
-        let compute_pipeline = unsafe {
-            device.create_compute_pipelines(vk::PipelineCache::null(), &pipeline_info, None)
-        }
-        .expect("failed to create cull compute pipeline")[0];
+        let compute_pipeline =
+            unsafe { device.create_compute_pipelines(vk::PipelineCache::null(), &pipe_info, None) }
+                .expect("failed to create cull pipeline")[0];
         unsafe { device.destroy_shader_module(comp_module, None) };
 
         let pool_sizes = [
@@ -246,103 +201,73 @@ impl ChunkBufferStore {
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
             .pool_sizes(&pool_sizes);
         let compute_pool = unsafe { device.create_descriptor_pool(&pool_info, None) }
-            .expect("failed to create cull descriptor pool");
+            .expect("failed to create cull desc pool");
 
         let layouts: Vec<_> = (0..MAX_FRAMES_IN_FLIGHT)
-            .map(|_| compute_descriptor_layout)
+            .map(|_| compute_desc_layout)
             .collect();
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(compute_pool)
             .set_layouts(&layouts);
         let compute_sets = unsafe { device.allocate_descriptor_sets(&alloc_info) }
-            .expect("failed to allocate cull descriptor sets");
+            .expect("failed to allocate cull desc sets");
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let meta_info = [vk::DescriptorBufferInfo {
-                buffer: metadata_buffers[i],
-                offset: 0,
-                range: meta_size,
-            }];
-            let frustum_info = [vk::DescriptorBufferInfo {
-                buffer: frustum_buffers[i],
-                offset: 0,
-                range: frustum_size,
-            }];
-            let indirect_info = [vk::DescriptorBufferInfo {
-                buffer: indirect_buffers[i],
-                offset: 0,
-                range: indirect_size,
-            }];
-            let count_info = [vk::DescriptorBufferInfo {
-                buffer: draw_count_buffers[i],
-                offset: 0,
-                range: count_size,
-            }];
             let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(compute_sets[i])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&meta_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(compute_sets[i])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&frustum_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(compute_sets[i])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&indirect_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(compute_sets[i])
-                    .dst_binding(3)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&count_info),
+                desc_write(
+                    compute_sets[i],
+                    0,
+                    vk::DescriptorType::STORAGE_BUFFER,
+                    meta_buffers[i],
+                    meta_size,
+                ),
+                desc_write(
+                    compute_sets[i],
+                    1,
+                    vk::DescriptorType::UNIFORM_BUFFER,
+                    frustum_buffers[i],
+                    frustum_size,
+                ),
+                desc_write(
+                    compute_sets[i],
+                    2,
+                    vk::DescriptorType::STORAGE_BUFFER,
+                    indirect_buffers[i],
+                    indirect_size,
+                ),
+                desc_write(
+                    compute_sets[i],
+                    3,
+                    vk::DescriptorType::STORAGE_BUFFER,
+                    count_buffers[i],
+                    count_size,
+                ),
             ];
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
         Self {
             vertex_buffer,
-            vertex_allocation,
+            vertex_alloc,
             index_buffer,
-            index_allocation,
-            vertex_free: FreeList::new(INITIAL_VERTICES),
-            index_free: FreeList::new(INITIAL_INDICES),
+            index_alloc,
+            free_buckets,
             chunks: HashMap::new(),
-            pending_frees: Vec::new(),
-            global_frame: 0,
+            cached_meta: Vec::new(),
+            meta_dirty: true,
             compute_pipeline,
             compute_layout,
-            compute_descriptor_layout,
+            compute_desc_layout,
             compute_pool,
             compute_sets,
-            metadata_buffers,
-            metadata_allocations,
+            meta_buffers,
+            meta_allocs,
             indirect_buffers,
-            indirect_allocations,
-            draw_count_buffers,
-            draw_count_allocations,
+            indirect_allocs,
+            count_buffers,
+            count_allocs,
             frustum_buffers,
-            frustum_allocations,
-        }
-    }
-
-    pub fn begin_frame(&mut self) {
-        self.global_frame += 1;
-        let safe_frame = self
-            .global_frame
-            .saturating_sub(MAX_FRAMES_IN_FLIGHT as u64 + 1);
-        let mut i = 0;
-        while i < self.pending_frees.len() {
-            if self.pending_frees[i].frame_retired <= safe_frame {
-                let pf = self.pending_frees.swap_remove(i);
-                self.vertex_free.free(pf.vertex_offset, pf.vertex_count);
-                self.index_free.free(pf.index_offset, pf.index_count);
-            } else {
-                i += 1;
-            }
+            frustum_allocs,
         }
     }
 
@@ -354,36 +279,16 @@ impl ChunkBufferStore {
 
         self.remove(&mesh.pos);
 
-        let v_count = mesh.vertices.len() as u32;
-        let i_count = mesh.indices.len() as u32;
-
-        let vertex_offset = match self.vertex_free.alloc(v_count) {
-            Some(o) => o,
-            None => {
-                log::warn!("Vertex mega-buffer full, skipping chunk {:?}", mesh.pos);
-                return;
-            }
-        };
-        let index_offset = match self.index_free.alloc(i_count) {
-            Some(o) => o,
-            None => {
-                self.vertex_free.free(vertex_offset, v_count);
-                log::warn!("Index mega-buffer full, skipping chunk {:?}", mesh.pos);
-                return;
-            }
-        };
-
-        let vertex_bytes = bytemuck::cast_slice(&mesh.vertices);
-        let vb_byte_offset = vertex_offset as usize * VERTEX_SIZE;
-        self.vertex_allocation.mapped_slice_mut().unwrap()
-            [vb_byte_offset..vb_byte_offset + vertex_bytes.len()]
-            .copy_from_slice(vertex_bytes);
-
-        let index_bytes = bytemuck::cast_slice(&mesh.indices);
-        let ib_byte_offset = index_offset as usize * INDEX_SIZE;
-        self.index_allocation.mapped_slice_mut().unwrap()
-            [ib_byte_offset..ib_byte_offset + index_bytes.len()]
-            .copy_from_slice(index_bytes);
+        let num_buckets = mesh.vertices.len().div_ceil(BUCKET_VERTICES as usize) as u32;
+        if self.free_buckets.len() < num_buckets as usize {
+            log::warn!(
+                "Bucket pool full ({} free, need {}), skipping {:?}",
+                self.free_buckets.len(),
+                num_buckets,
+                mesh.pos,
+            );
+            return;
+        }
 
         let mut min_y = f32::MAX;
         let mut max_y = f32::MIN;
@@ -393,43 +298,106 @@ impl ChunkBufferStore {
         }
         let cx = mesh.pos.x as f32 * 16.0;
         let cz = mesh.pos.z as f32 * 16.0;
+        let aabb = ChunkAABB {
+            min: [cx, min_y, cz, 0.0],
+            max: [cx + 16.0, max_y, cz + 16.0, 0.0],
+        };
+
+        let mut bucket_ids = Vec::with_capacity(num_buckets as usize);
+        let mut index_counts = Vec::with_capacity(num_buckets as usize);
+
+        let vb_ptr = self.vertex_alloc.mapped_slice_mut().unwrap();
+        let ib_ptr = self.index_alloc.mapped_slice_mut().unwrap();
+
+        let verts = &mesh.vertices;
+        let indices = &mesh.indices;
+        let mut vert_cursor = 0usize;
+        let mut idx_cursor = 0usize;
+
+        for _ in 0..num_buckets {
+            let bucket = self.free_buckets.pop_front().unwrap();
+            let vert_end = (vert_cursor + BUCKET_VERTICES as usize).min(verts.len());
+            let _vert_count = vert_end - vert_cursor;
+
+            let vb_offset = bucket as usize * BUCKET_VERTICES as usize * VERTEX_SIZE as usize;
+            let src = bytemuck::cast_slice(&verts[vert_cursor..vert_end]);
+            vb_ptr[vb_offset..vb_offset + src.len()].copy_from_slice(src);
+
+            let local_base = vert_cursor as u32;
+            let local_end = vert_end as u32;
+            let mut bucket_indices: Vec<u32> = Vec::new();
+
+            while idx_cursor + 6 <= indices.len() {
+                let max_idx = indices[idx_cursor..idx_cursor + 6]
+                    .iter()
+                    .copied()
+                    .max()
+                    .unwrap_or(0);
+                if max_idx >= local_end {
+                    break;
+                }
+                for &idx in &indices[idx_cursor..idx_cursor + 6] {
+                    bucket_indices.push(idx - local_base);
+                }
+                idx_cursor += 6;
+            }
+
+            let ib_offset = bucket as usize * BUCKET_INDICES as usize * INDEX_SIZE as usize;
+            let idx_bytes = bytemuck::cast_slice(&bucket_indices);
+            ib_ptr[ib_offset..ib_offset + idx_bytes.len()].copy_from_slice(idx_bytes);
+
+            index_counts.push(bucket_indices.len() as u32);
+            bucket_ids.push(bucket);
+            vert_cursor = vert_end;
+        }
+
+        if idx_cursor < indices.len() {
+            let last_bucket = *bucket_ids.last().unwrap();
+            let local_base = (verts.len() - (verts.len() % BUCKET_VERTICES as usize).max(1)) as u32;
+            let remaining: Vec<u32> = indices[idx_cursor..]
+                .iter()
+                .map(|&idx| idx - local_base)
+                .collect();
+            let ib_offset = last_bucket as usize * BUCKET_INDICES as usize * INDEX_SIZE as usize;
+            let existing_count = *index_counts.last().unwrap() as usize;
+            let idx_bytes = bytemuck::cast_slice(&remaining);
+            let start = ib_offset + existing_count * INDEX_SIZE as usize;
+            ib_ptr[start..start + idx_bytes.len()].copy_from_slice(idx_bytes);
+            *index_counts.last_mut().unwrap() += remaining.len() as u32;
+        }
 
         self.chunks.insert(
             mesh.pos,
-            ChunkSlot {
-                vertex_offset,
-                vertex_count: v_count,
-                index_offset,
-                index_count: i_count,
-                aabb: ChunkAABB {
-                    min: [cx, min_y, cz, 0.0],
-                    max: [cx + 16.0, max_y, cz + 16.0, 0.0],
-                },
+            ChunkAlloc {
+                buckets: bucket_ids,
+                index_counts,
+                aabb,
             },
         );
+        self.meta_dirty = true;
     }
 
     pub fn remove(&mut self, pos: &ChunkPos) {
-        if let Some(slot) = self.chunks.remove(pos) {
-            self.pending_frees.push(PendingFree {
-                vertex_offset: slot.vertex_offset,
-                vertex_count: slot.vertex_count,
-                index_offset: slot.index_offset,
-                index_count: slot.index_count,
-                frame_retired: self.global_frame,
-            });
+        if let Some(alloc) = self.chunks.remove(pos) {
+            for bucket in alloc.buckets {
+                self.free_buckets.push_back(bucket);
+            }
+            self.meta_dirty = true;
         }
     }
 
     pub fn clear(&mut self) {
         self.chunks.clear();
-        self.pending_frees.clear();
-        self.vertex_free = FreeList::new(INITIAL_VERTICES);
-        self.index_free = FreeList::new(INITIAL_INDICES);
+        self.free_buckets.clear();
+        for i in 0..TOTAL_BUCKETS {
+            self.free_buckets.push_back(i);
+        }
+        self.cached_meta.clear();
+        self.meta_dirty = true;
     }
 
     pub fn chunk_count(&self) -> u32 {
-        self.chunks.len().min(MAX_CHUNKS) as u32
+        self.chunks.len() as u32
     }
 
     pub fn dispatch_cull(
@@ -438,34 +406,32 @@ impl ChunkBufferStore {
         cmd: vk::CommandBuffer,
         frame: usize,
         frustum: &[[f32; 4]; 6],
-        camera_pos: [f32; 3],
+        _camera_pos: [f32; 3],
     ) {
-        let count = self.chunks.len().min(MAX_CHUNKS) as u32;
-        if count == 0 {
+        if self.chunks.is_empty() {
             return;
         }
 
-        let mut entries: Vec<ChunkMeta> = self
-            .chunks
-            .values()
-            .map(|s| ChunkMeta {
-                aabb_min: s.aabb.min,
-                aabb_max: s.aabb.max,
-                index_count: s.index_count,
-                first_index: s.index_offset,
-                vertex_offset: s.vertex_offset as i32,
-                _pad: 0,
-            })
-            .collect();
+        if self.meta_dirty {
+            self.cached_meta.clear();
+            for alloc in self.chunks.values() {
+                for (i, &bucket) in alloc.buckets.iter().enumerate() {
+                    self.cached_meta.push(ChunkMeta {
+                        aabb_min: alloc.aabb.min,
+                        aabb_max: alloc.aabb.max,
+                        index_count: alloc.index_counts[i],
+                        first_index: bucket * BUCKET_INDICES,
+                        vertex_offset: (bucket * BUCKET_VERTICES) as i32,
+                        _pad: 0,
+                    });
+                }
+            }
+            self.meta_dirty = false;
+        }
 
-        entries.sort_by(|a, b| {
-            let da = chunk_dist_sq(a, camera_pos);
-            let db = chunk_dist_sq(b, camera_pos);
-            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let meta_bytes = bytemuck::cast_slice(&entries);
-        self.metadata_allocations[frame].mapped_slice_mut().unwrap()[..meta_bytes.len()]
+        let count = self.cached_meta.len() as u32;
+        let meta_bytes = bytemuck::cast_slice(&self.cached_meta);
+        self.meta_allocs[frame].mapped_slice_mut().unwrap()[..meta_bytes.len()]
             .copy_from_slice(meta_bytes);
 
         let frustum_data = FrustumData {
@@ -474,12 +440,10 @@ impl ChunkBufferStore {
             _pad: [0; 3],
         };
         let frustum_bytes = bytemuck::bytes_of(&frustum_data);
-        self.frustum_allocations[frame].mapped_slice_mut().unwrap()[..frustum_bytes.len()]
+        self.frustum_allocs[frame].mapped_slice_mut().unwrap()[..frustum_bytes.len()]
             .copy_from_slice(frustum_bytes);
 
-        self.draw_count_allocations[frame]
-            .mapped_slice_mut()
-            .unwrap()[..4]
+        self.count_allocs[frame].mapped_slice_mut().unwrap()[..4]
             .copy_from_slice(&0u32.to_ne_bytes());
 
         unsafe {
@@ -492,9 +456,7 @@ impl ChunkBufferStore {
                 &[self.compute_sets[frame]],
                 &[],
             );
-
-            let groups = count.div_ceil(64);
-            device.cmd_dispatch(cmd, groups, 1, 1);
+            device.cmd_dispatch(cmd, count.div_ceil(64), 1, 1);
 
             let barrier = vk::MemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::SHADER_WRITE)
@@ -516,17 +478,20 @@ impl ChunkBufferStore {
             return;
         }
 
-        let max_draws = self.chunks.len().min(MAX_CHUNKS) as u32;
+        let max_draws = self
+            .chunks
+            .values()
+            .map(|c| c.buckets.len() as u32)
+            .sum::<u32>();
 
         unsafe {
             device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer], &[0]);
             device.cmd_bind_index_buffer(cmd, self.index_buffer, 0, vk::IndexType::UINT32);
-
             device.cmd_draw_indexed_indirect_count(
                 cmd,
                 self.indirect_buffers[frame],
                 0,
-                self.draw_count_buffers[frame],
+                self.count_buffers[frame],
                 0,
                 max_draws,
                 std::mem::size_of::<DrawCommand>() as u32,
@@ -536,77 +501,61 @@ impl ChunkBufferStore {
 
     pub fn destroy(&mut self, device: &ash::Device, allocator: &Arc<Mutex<Allocator>>) {
         let mut alloc = allocator.lock().unwrap();
-
         unsafe {
             device.destroy_buffer(self.vertex_buffer, None);
             device.destroy_buffer(self.index_buffer, None);
         }
         alloc
-            .free(std::mem::replace(&mut self.vertex_allocation, unsafe {
+            .free(std::mem::replace(&mut self.vertex_alloc, unsafe {
                 std::mem::zeroed()
             }))
             .ok();
         alloc
-            .free(std::mem::replace(&mut self.index_allocation, unsafe {
+            .free(std::mem::replace(&mut self.index_alloc, unsafe {
                 std::mem::zeroed()
             }))
             .ok();
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             unsafe {
-                device.destroy_buffer(self.metadata_buffers[i], None);
+                device.destroy_buffer(self.meta_buffers[i], None);
                 device.destroy_buffer(self.indirect_buffers[i], None);
-                device.destroy_buffer(self.draw_count_buffers[i], None);
+                device.destroy_buffer(self.count_buffers[i], None);
                 device.destroy_buffer(self.frustum_buffers[i], None);
             }
             alloc
-                .free(std::mem::replace(
-                    &mut self.metadata_allocations[i],
-                    unsafe { std::mem::zeroed() },
-                ))
+                .free(std::mem::replace(&mut self.meta_allocs[i], unsafe {
+                    std::mem::zeroed()
+                }))
                 .ok();
             alloc
-                .free(std::mem::replace(
-                    &mut self.indirect_allocations[i],
-                    unsafe { std::mem::zeroed() },
-                ))
+                .free(std::mem::replace(&mut self.indirect_allocs[i], unsafe {
+                    std::mem::zeroed()
+                }))
                 .ok();
             alloc
-                .free(std::mem::replace(
-                    &mut self.draw_count_allocations[i],
-                    unsafe { std::mem::zeroed() },
-                ))
+                .free(std::mem::replace(&mut self.count_allocs[i], unsafe {
+                    std::mem::zeroed()
+                }))
                 .ok();
             alloc
-                .free(std::mem::replace(
-                    &mut self.frustum_allocations[i],
-                    unsafe { std::mem::zeroed() },
-                ))
+                .free(std::mem::replace(&mut self.frustum_allocs[i], unsafe {
+                    std::mem::zeroed()
+                }))
                 .ok();
         }
-
         drop(alloc);
 
         unsafe {
             device.destroy_pipeline(self.compute_pipeline, None);
             device.destroy_pipeline_layout(self.compute_layout, None);
             device.destroy_descriptor_pool(self.compute_pool, None);
-            device.destroy_descriptor_set_layout(self.compute_descriptor_layout, None);
+            device.destroy_descriptor_set_layout(self.compute_desc_layout, None);
         }
     }
 }
 
-fn chunk_dist_sq(meta: &ChunkMeta, cam: [f32; 3]) -> f32 {
-    let cx = (meta.aabb_min[0] + meta.aabb_max[0]) * 0.5;
-    let cy = (meta.aabb_min[1] + meta.aabb_max[1]) * 0.5;
-    let cz = (meta.aabb_min[2] + meta.aabb_max[2]) * 0.5;
-    let dx = cx - cam[0];
-    let dy = cy - cam[1];
-    let dz = cz - cam[2];
-    dx * dx + dy * dy + dz * dz
-}
-
-fn create_cull_descriptor_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
+fn create_cull_desc_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
     let bindings = [
         vk::DescriptorSetLayoutBinding {
             binding: 0,
@@ -639,5 +588,27 @@ fn create_cull_descriptor_layout(device: &ash::Device) -> vk::DescriptorSetLayou
     ];
     let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
     unsafe { device.create_descriptor_set_layout(&info, None) }
-        .expect("failed to create cull descriptor set layout")
+        .expect("failed to create cull desc layout")
+}
+
+fn desc_write(
+    set: vk::DescriptorSet,
+    binding: u32,
+    ty: vk::DescriptorType,
+    buffer: vk::Buffer,
+    range: u64,
+) -> vk::WriteDescriptorSet<'static> {
+    // Safety: the DescriptorBufferInfo is stored inline in WriteDescriptorSet via the builder
+    // pattern, but ash's lifetime requirements need a reference. We use a leaked Box here
+    // because these writes only happen once at init time.
+    let info = Box::leak(Box::new([vk::DescriptorBufferInfo {
+        buffer,
+        offset: 0,
+        range,
+    }]));
+    vk::WriteDescriptorSet::default()
+        .dst_set(set)
+        .dst_binding(binding)
+        .descriptor_type(ty)
+        .buffer_info(info)
 }

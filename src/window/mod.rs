@@ -98,6 +98,9 @@ struct App {
     was_sprinting: bool,
     position_send_counter: u32,
     options_from_game: bool,
+    last_render_distance: u32,
+    server_render_distance: u32,
+    server_simulation_distance: u32,
 }
 
 struct FpsCounter {
@@ -164,6 +167,9 @@ impl App {
             menu: MainMenu::new(&game_dir, Arc::clone(&tokio_rt)),
             tokio_rt,
             options_from_game: false,
+            last_render_distance: DEFAULT_RENDER_DISTANCE,
+            server_render_distance: 0,
+            server_simulation_distance: 0,
             player: LocalPlayer::new(),
             tick_accumulator: 0.0,
             prev_player_pos: glam::Vec3::ZERO,
@@ -184,6 +190,39 @@ impl App {
             last_sent_horizontal_collision: false,
             was_sprinting: false,
             position_send_counter: 0,
+        }
+    }
+
+    fn sync_render_distance(&mut self) {
+        let rd = self.menu.render_distance;
+        self.last_render_distance = rd;
+        log::info!("Render distance changed to {rd}");
+        if let Some(sender) = &self.packet_sender {
+            use azalea_entity::HumanoidArm;
+            use azalea_protocol::common::client_information::*;
+            sender.send(ServerboundGamePacket::ClientInformation(
+                azalea_protocol::packets::game::s_client_information::ServerboundClientInformation {
+                    client_information: ClientInformation {
+                        language: "en_us".into(),
+                        view_distance: rd as u8,
+                        chat_visibility: ChatVisibility::Full,
+                        chat_colors: true,
+                        model_customization: ModelCustomization {
+                            cape: true,
+                            jacket: true,
+                            left_sleeve: true,
+                            right_sleeve: true,
+                            left_pants: true,
+                            right_pants: true,
+                            hat: true,
+                        },
+                        main_hand: HumanoidArm::Right,
+                        text_filtering_enabled: false,
+                        allows_listing: true,
+                        particle_status: ParticleStatus::All,
+                    },
+                },
+            ));
         }
     }
 
@@ -364,6 +403,18 @@ impl App {
                         }
                     }
                 }
+                NetworkEvent::GameModeChanged { game_mode } => {
+                    log::info!("Game mode changed to {game_mode}");
+                    self.player.game_mode = game_mode;
+                }
+                NetworkEvent::ServerViewDistance { distance } => {
+                    log::info!("Server view distance: {distance}");
+                    self.server_render_distance = distance;
+                }
+                NetworkEvent::ServerSimulationDistance { distance } => {
+                    log::info!("Server simulation distance: {distance}");
+                    self.server_simulation_distance = distance;
+                }
                 NetworkEvent::BlockChangedAck { seq } => {
                     self.interaction.acknowledge(seq);
                 }
@@ -387,8 +438,13 @@ impl App {
         }
 
         if let Some(dispatcher) = &self.mesh_dispatcher {
+            let player_chunk = azalea_core::position::ChunkPos::new(
+                (self.player.position.x as i32).div_euclid(16),
+                (self.player.position.z as i32).div_euclid(16),
+            );
             for pos in chunks_to_mesh {
-                dispatcher.enqueue(&self.chunk_store, pos);
+                let lod = chunk_lod(pos, player_chunk);
+                dispatcher.enqueue(&self.chunk_store, pos, lod);
             }
         }
     }
@@ -426,10 +482,11 @@ impl App {
                 &self.chunk_store,
                 self.packet_sender.as_ref(),
                 self.player.on_ground,
+                self.player.game_mode == 1,
             );
             if let Some(dispatcher) = &self.mesh_dispatcher {
                 for pos in dirty {
-                    dispatcher.enqueue(&self.chunk_store, pos);
+                    dispatcher.enqueue(&self.chunk_store, pos, 0);
                 }
             }
 
@@ -748,11 +805,16 @@ impl ApplicationHandler for App {
                                     self.panorama_scroll,
                                     result.blur,
                                     result.elements,
+                                    self.input.cursor_pos(),
                                 ) {
                                     log::error!("Render error: {e}");
                                 }
 
                                 self.input.clear_click_events();
+
+                                if self.menu.render_distance != self.last_render_distance {
+                                    self.sync_render_distance();
+                                }
 
                                 if self.options_from_game && !self.menu.is_options_screen() {
                                     self.state = GameState::InGame;
@@ -760,6 +822,12 @@ impl ApplicationHandler for App {
                                     self.options_from_game = false;
                                     self.apply_cursor_grab();
                                     break 'redraw;
+                                }
+
+                                if result.clicked_button {
+                                    if let Some(renderer) = &mut self.renderer {
+                                        renderer.trigger_skin_swing();
+                                    }
                                 }
 
                                 match action {
@@ -847,6 +915,7 @@ impl ApplicationHandler for App {
                                     self.panorama_scroll,
                                     2.0,
                                     elements,
+                                    self.input.cursor_pos(),
                                 ) {
                                     log::error!("Render error: {e}");
                                 }
@@ -1078,6 +1147,19 @@ pub struct LaunchAuth {
     pub username: String,
     pub uuid: uuid::Uuid,
     pub access_token: String,
+}
+
+fn chunk_lod(pos: azalea_core::position::ChunkPos, player: azalea_core::position::ChunkPos) -> u32 {
+    let dx = (pos.x - player.x).unsigned_abs();
+    let dz = (pos.z - player.z).unsigned_abs();
+    let dist = dx.max(dz);
+    if dist <= 8 {
+        0
+    } else if dist <= 16 {
+        1
+    } else {
+        2
+    }
 }
 
 pub fn run(

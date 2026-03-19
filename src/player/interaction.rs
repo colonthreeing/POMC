@@ -127,6 +127,7 @@ impl InteractionState {
         chunks: &ChunkStore,
         sender: Option<&PacketSender>,
         on_ground: bool,
+        creative: bool,
     ) -> Vec<azalea_core::position::ChunkPos> {
         let mut dirty_chunks = Vec::new();
         self.update_swing();
@@ -144,11 +145,11 @@ impl InteractionState {
         }
 
         if input.left_just_pressed() {
-            self.start_attack(chunks, sender, on_ground, &mut dirty_chunks);
+            self.start_attack(chunks, sender, on_ground, creative, &mut dirty_chunks);
         }
 
         if input.left_held() {
-            self.continue_attack(chunks, sender, on_ground, &mut dirty_chunks);
+            self.continue_attack(chunks, sender, on_ground, creative, &mut dirty_chunks);
         } else {
             self.miss_time = 0;
             self.stop_destroying(sender);
@@ -166,6 +167,7 @@ impl InteractionState {
         chunks: &ChunkStore,
         sender: Option<&PacketSender>,
         on_ground: bool,
+        creative: bool,
         dirty_chunks: &mut Vec<azalea_core::position::ChunkPos>,
     ) {
         if self.miss_time > 0 {
@@ -185,7 +187,7 @@ impl InteractionState {
             return;
         }
 
-        self.start_destroy_block(hit, chunks, sender, on_ground, dirty_chunks);
+        self.start_destroy_block(hit, chunks, sender, on_ground, creative, dirty_chunks);
         self.swing(sender);
     }
 
@@ -194,6 +196,7 @@ impl InteractionState {
         chunks: &ChunkStore,
         sender: Option<&PacketSender>,
         on_ground: bool,
+        creative: bool,
         dirty_chunks: &mut Vec<azalea_core::position::ChunkPos>,
     ) {
         if self.miss_time > 0 {
@@ -211,7 +214,7 @@ impl InteractionState {
             return;
         }
 
-        self.continue_destroy_block(hit, chunks, sender, on_ground, dirty_chunks);
+        self.continue_destroy_block(hit, chunks, sender, on_ground, creative, dirty_chunks);
         self.swing(sender);
     }
 
@@ -253,6 +256,7 @@ impl InteractionState {
         chunks: &ChunkStore,
         sender: Option<&PacketSender>,
         on_ground: bool,
+        creative: bool,
         dirty_chunks: &mut Vec<azalea_core::position::ChunkPos>,
     ) {
         let state = chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
@@ -261,7 +265,7 @@ impl InteractionState {
             return;
         }
 
-        let progress = destroy_progress(state, on_ground);
+        let progress = destroy_progress(state, on_ground, creative);
 
         if progress >= 1.0 {
             if self.is_destroying {
@@ -269,7 +273,7 @@ impl InteractionState {
                     sender,
                     Action::AbortDestroyBlock,
                     self.destroy_pos,
-                    hit.face,
+                    Direction::Down,
                     0,
                 );
                 self.is_destroying = false;
@@ -331,6 +335,7 @@ impl InteractionState {
         chunks: &ChunkStore,
         sender: Option<&PacketSender>,
         on_ground: bool,
+        creative: bool,
         dirty_chunks: &mut Vec<azalea_core::position::ChunkPos>,
     ) {
         if self.destroy_delay > 0 {
@@ -339,7 +344,7 @@ impl InteractionState {
         }
 
         if self.destroy_pos != hit.block_pos {
-            self.start_destroy_block(hit, chunks, sender, on_ground, dirty_chunks);
+            self.start_destroy_block(hit, chunks, sender, on_ground, creative, dirty_chunks);
             return;
         }
 
@@ -349,7 +354,7 @@ impl InteractionState {
             return;
         }
 
-        self.destroy_progress += destroy_progress(state, on_ground);
+        self.destroy_progress += destroy_progress(state, on_ground, creative);
         self.destroy_ticks += 1.0;
 
         if self.destroy_progress >= 1.0 {
@@ -392,7 +397,10 @@ impl InteractionState {
     }
 }
 
-fn destroy_progress(state: BlockState, on_ground: bool) -> f32 {
+fn destroy_progress(state: BlockState, on_ground: bool, creative: bool) -> f32 {
+    if creative {
+        return 1.0;
+    }
     use azalea_block::BlockTrait;
     let behavior = Box::<dyn BlockTrait>::from(state).behavior();
     let hardness = behavior.destroy_time;

@@ -54,7 +54,7 @@ impl MeshDispatcher {
         }
     }
 
-    pub fn enqueue(&self, chunk_store: &ChunkStore, pos: ChunkPos) {
+    pub fn enqueue(&self, chunk_store: &ChunkStore, pos: ChunkPos, lod: u32) {
         let registry = Arc::clone(&self.registry);
         let uv_map = Arc::clone(&self.uv_map);
         let tx = self.result_tx.clone();
@@ -80,7 +80,7 @@ impl MeshDispatcher {
                 min_y,
                 height,
             };
-            let mesh = mesh_chunk_snapshot(&snapshot, pos, &registry, &uv_map);
+            let mesh = mesh_chunk_snapshot(&snapshot, pos, &registry, &uv_map, lod);
             let _ = tx.send(mesh);
         });
     }
@@ -130,31 +130,54 @@ fn mesh_chunk_snapshot(
     pos: ChunkPos,
     registry: &BlockRegistry,
     uv_map: &AtlasUVMap,
+    lod: u32,
 ) -> ChunkMeshData {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let mut logged_missing: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let step = 1i32 << lod;
+    let scale = step as f32;
 
     let min_y = snapshot.min_y();
     let max_y = min_y + snapshot.height() as i32;
     let world_x = pos.x * 16;
     let world_z = pos.z * 16;
 
-    for local_z in 0..16i32 {
-        for local_x in 0..16i32 {
+    let mut local_z = 0i32;
+    while local_z < 16 {
+        let mut local_x = 0i32;
+        while local_x < 16 {
             let bx = world_x + local_x;
             let bz = world_z + local_z;
 
-            for by in min_y..max_y {
+            let mut by = min_y;
+            while by < max_y {
                 let state = snapshot.get_block_state(bx, by, bz);
                 let kind = classify_block(state);
                 if matches!(kind, BlockKind::Air) {
+                    by += step;
                     continue;
                 }
 
                 let block_pos = [bx as f32, by as f32, bz as f32];
 
-                if let BlockKind::Water | BlockKind::Lava = kind {
+                if lod > 0 {
+                    emit_lod_cube(
+                        &mut vertices,
+                        &mut indices,
+                        block_pos,
+                        scale,
+                        state,
+                        snapshot,
+                        registry,
+                        uv_map,
+                        bx,
+                        by,
+                        bz,
+                        step,
+                    );
+                } else if let BlockKind::Water | BlockKind::Lava = kind {
                     let fluid = if matches!(kind, BlockKind::Lava) {
                         "lava"
                     } else {
@@ -178,6 +201,19 @@ fn mesh_chunk_snapshot(
                         &mut indices,
                         block_pos,
                         baked,
+                        snapshot,
+                        registry,
+                        uv_map,
+                        bx,
+                        by,
+                        bz,
+                    );
+                } else if let Some(quads) = registry.get_multipart_quads(state) {
+                    emit_multipart(
+                        &mut vertices,
+                        &mut indices,
+                        block_pos,
+                        &quads,
                         snapshot,
                         registry,
                         uv_map,
@@ -215,8 +251,11 @@ fn mesh_chunk_snapshot(
                         bz,
                     );
                 }
+                by += step;
             }
+            local_x += step;
         }
+        local_z += step;
     }
 
     ChunkMeshData {
@@ -399,6 +438,97 @@ fn emit_fluid(
         emit_face(
             vertices, indices, block_pos, &positions, &uvs, light, region, tint,
         );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_multipart(
+    vertices: &mut Vec<ChunkVertex>,
+    indices: &mut Vec<u32>,
+    block_pos: [f32; 3],
+    quads: &[&crate::world::block::model::BakedQuad],
+    snapshot: &ChunkStoreSnapshot,
+    registry: &BlockRegistry,
+    uv_map: &AtlasUVMap,
+    bx: i32,
+    by: i32,
+    bz: i32,
+) {
+    for quad in quads {
+        if let Some(cullface) = quad.cullface {
+            let offset = cullface.offset();
+            let neighbor = snapshot.get_block_state(bx + offset[0], by + offset[1], bz + offset[2]);
+            if registry.is_opaque_full_cube(neighbor) {
+                continue;
+            }
+        }
+
+        let region = uv_map.get_region(&quad.texture);
+        let tint = if quad.tinted { GRASS_TINT } else { WHITE };
+        emit_face(
+            vertices,
+            indices,
+            block_pos,
+            &quad.positions,
+            &quad.uvs,
+            quad.shade_light,
+            region,
+            tint,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_lod_cube(
+    vertices: &mut Vec<ChunkVertex>,
+    indices: &mut Vec<u32>,
+    block_pos: [f32; 3],
+    scale: f32,
+    state: azalea_block::BlockState,
+    snapshot: &ChunkStoreSnapshot,
+    registry: &BlockRegistry,
+    uv_map: &AtlasUVMap,
+    bx: i32,
+    by: i32,
+    bz: i32,
+    step: i32,
+) {
+    let region = if let Some(textures) = registry.get_textures(state) {
+        let tint = tint_color(textures.tint);
+        let tex = uv_map.get_region(&textures.top);
+        (tex, tint)
+    } else {
+        (uv_map.get_region(""), MISSING_TINT)
+    };
+
+    for dir in &CUBE_FACE_DIRS {
+        let offset = dir.offset();
+        let nx = bx + offset[0] * step;
+        let ny = by + offset[1] * step;
+        let nz = bz + offset[2] * step;
+        let neighbor = snapshot.get_block_state(nx, ny, nz);
+        if registry.is_opaque_full_cube(neighbor) {
+            continue;
+        }
+
+        let (positions, uvs, light) = cube_face_geometry(*dir);
+        let base = vertices.len() as u32;
+        for i in 0..4 {
+            vertices.push(ChunkVertex {
+                position: [
+                    block_pos[0] + positions[i][0] * scale,
+                    block_pos[1] + positions[i][1] * scale,
+                    block_pos[2] + positions[i][2] * scale,
+                ],
+                tex_coords: [
+                    region.0.u_min + uvs[i][0] * (region.0.u_max - region.0.u_min),
+                    region.0.v_min + uvs[i][1] * (region.0.v_max - region.0.v_min),
+                ],
+                light,
+                tint: region.1,
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
     }
 }
 

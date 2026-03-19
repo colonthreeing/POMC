@@ -59,8 +59,8 @@ impl FaceTextures {
 #[derive(Clone)]
 pub struct BlockRegistry {
     textures: HashMap<String, FaceTextures>,
-    /// block_name → (variant_key → BakedModel)
     baked: HashMap<String, HashMap<String, BakedModel>>,
+    multipart: HashMap<String, Vec<model::MultipartEntry>>,
 }
 
 impl BlockRegistry {
@@ -88,9 +88,13 @@ impl BlockRegistry {
             textures
         };
 
-        let baked = model::bake_all_models(assets_dir, asset_index);
+        let (baked, multipart) = model::bake_all_models(assets_dir, asset_index);
 
-        Self { textures, baked }
+        Self {
+            textures,
+            baked,
+            multipart,
+        }
     }
 
     pub fn get_textures(&self, state: BlockState) -> Option<&FaceTextures> {
@@ -111,6 +115,30 @@ impl BlockRegistry {
             .get(&variant_key)
             .or_else(|| variants.get(""))
             .or_else(|| variants.values().next())
+    }
+
+    pub fn get_multipart_quads(&self, state: BlockState) -> Option<Vec<&model::BakedQuad>> {
+        let block: Box<dyn azalea_block::BlockTrait> = state.into();
+        let entries = self.multipart.get(block.id())?;
+        let props = block.property_map();
+
+        let mut quads = Vec::new();
+        for entry in entries {
+            if entry.when.is_empty()
+                || entry
+                    .when
+                    .iter()
+                    .all(|(k, v)| props.get(k.as_str()).map(|pv| pv == v).unwrap_or(false))
+            {
+                quads.extend(entry.quads.iter());
+            }
+        }
+
+        if quads.is_empty() {
+            None
+        } else {
+            Some(quads)
+        }
     }
 
     pub fn is_opaque_full_cube(&self, state: BlockState) -> bool {
@@ -138,7 +166,15 @@ impl BlockRegistry {
                 .flat_map(|model| model.quads.iter().map(|q| q.texture.as_str()))
         });
 
-        face_textures.chain(baked_textures)
+        let multipart_textures = self.multipart.values().flat_map(|entries| {
+            entries
+                .iter()
+                .flat_map(|e| e.quads.iter().map(|q| q.texture.as_str()))
+        });
+
+        face_textures
+            .chain(baked_textures)
+            .chain(multipart_textures)
     }
 }
 

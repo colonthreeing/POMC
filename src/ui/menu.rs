@@ -15,6 +15,7 @@ use crate::renderer::pipelines::menu_overlay::{
 struct Settings {
     gui_scale: u32,
     render_distance: u32,
+    simulation_distance: u32,
 }
 
 impl Default for Settings {
@@ -22,6 +23,7 @@ impl Default for Settings {
         Self {
             gui_scale: 0,
             render_distance: 12,
+            simulation_distance: 12,
         }
     }
 }
@@ -76,6 +78,7 @@ pub struct MainMenuResult {
     pub action: MenuAction,
     pub cursor_pointer: bool,
     pub blur: f32,
+    pub clicked_button: bool,
 }
 
 pub struct MenuInput {
@@ -195,18 +198,10 @@ pub struct MainMenu {
     cache_file: PathBuf,
     pub gui_scale_setting: u32,
     pub render_distance: u32,
+    pub simulation_distance: u32,
     active_slider: Option<&'static str>,
     settings_dir: PathBuf,
-    news_index: usize,
     menu_open_time: Option<Instant>,
-    changelog: Arc<Mutex<Vec<ChangelogEntry>>>,
-}
-
-#[derive(Clone, serde::Deserialize)]
-pub struct ChangelogEntry {
-    pub version: String,
-    pub date: String,
-    pub lines: Vec<String>,
 }
 
 impl MainMenu {
@@ -221,7 +216,7 @@ impl MainMenu {
             .map(|a| a.username.clone())
             .unwrap_or_else(|| "Steve".into());
         let settings = load_settings(game_dir);
-        let menu = Self {
+        Self {
             username,
             screen: Screen::Main,
             server_list,
@@ -245,29 +240,11 @@ impl MainMenu {
             cache_file,
             gui_scale_setting: settings.gui_scale,
             render_distance: settings.render_distance,
+            simulation_distance: settings.simulation_distance,
             active_slider: None,
             settings_dir: game_dir.to_path_buf(),
-            news_index: 0,
             menu_open_time: None,
-            changelog: Arc::new(Mutex::new(vec![ChangelogEntry {
-                version: "v0.1.0".into(),
-                date: "Loading...".into(),
-                lines: vec!["Fetching changelog...".into()],
-            }])),
-        };
-
-        let changelog = Arc::clone(&menu.changelog);
-        menu.rt.spawn(async move {
-            match fetch_github_releases().await {
-                Ok(entries) if !entries.is_empty() => {
-                    *changelog.lock() = entries;
-                }
-                Ok(_) => log::warn!("No GitHub releases found"),
-                Err(e) => log::warn!("Failed to fetch changelog: {e}"),
-            }
-        });
-
-        menu
+        }
     }
 
     fn save_settings(&self) {
@@ -276,6 +253,7 @@ impl MainMenu {
             &Settings {
                 gui_scale: self.gui_scale_setting,
                 render_distance: self.render_distance,
+                simulation_distance: self.simulation_distance,
             },
         );
     }
@@ -414,15 +392,14 @@ impl MainMenu {
         let mut elements = Vec::new();
         let mut action = MenuAction::None;
         let mut any_hovered = false;
+        let mut any_clicked = false;
 
         let anim_t = self
             .menu_open_time
             .get_or_insert_with(Instant::now)
             .elapsed()
             .as_secs_f32();
-        let slide = ease_out_cubic((anim_t / 2.0).min(1.0));
-        let panel_t = slide;
-        let news_anim = slide;
+        let panel_t = ease_out_cubic((anim_t / 2.0).min(1.0));
 
         let accent: [f32; 4] = [0.29, 0.87, 0.5, 1.0];
         let glass: [f32; 4] = [0.07, 0.08, 0.16, 0.55];
@@ -619,6 +596,7 @@ impl MainMenu {
             });
 
             if clicked && hovered {
+                any_clicked = true;
                 if def.id == 2 {
                     action = MenuAction::Quit;
                 } else if self.auth_account.is_some() {
@@ -639,191 +617,6 @@ impl MainMenu {
                     self.screen = Screen::AuthPrompt { pending };
                 }
             }
-        }
-
-        let news_w = (220.0 * s).min(screen_w * 0.3);
-        let news_pad = 20.0 * s;
-        let news_final_x = screen_w - news_w - screen_w * 0.06;
-        let news_start_x = screen_w;
-        let news_x = news_start_x + (news_final_x - news_start_x) * news_anim;
-        let news_r = 12.0 * s;
-        let news_title_size = 10.0 * s;
-        let news_body_size = 8.5 * s;
-        let news_line_h = news_body_size * 1.6;
-        let news_header_col: [f32; 4] = [0.29, 0.87, 0.5, 0.7];
-        let news_ver_col: [f32; 4] = [0.89, 0.90, 0.96, 0.9];
-        let news_text_col: [f32; 4] = [0.65, 0.68, 0.78, 0.7];
-        let news_dim_col: [f32; 4] = [0.45, 0.48, 0.58, 0.5];
-
-        let entries = self.changelog.lock().clone();
-        let label_h = news_title_size + 12.0 * s;
-
-        let entry = &entries[self.news_index.min(entries.len() - 1)];
-        let entry_h = news_pad
-            + label_h
-            + news_body_size
-            + 10.0 * s
-            + 1.0
-            + 8.0 * s
-            + entry.lines.len() as f32 * news_line_h
-            + news_pad;
-        let news_y = (screen_h - entry_h) / 2.0;
-
-        let nav_h = 28.0 * s;
-        let nav_gap = 6.0 * s;
-        let entry_h = entry_h + nav_h + nav_gap;
-
-        elements.push(MenuElement::FrostedRect {
-            x: news_x,
-            y: news_y,
-            w: news_w,
-            h: entry_h,
-            corner_radius: news_r,
-            tint: [0.055, 0.06, 0.13, 0.55 * news_anim],
-        });
-
-        let mut ny = news_y + news_pad;
-        let nx = news_x + news_pad;
-        let nw = news_w - news_pad * 2.0;
-
-        elements.push(MenuElement::Text {
-            x: nx,
-            y: ny,
-            text: "CHANGELOG".into(),
-            scale: news_title_size,
-            color: news_header_col,
-            centered: false,
-        });
-
-        if entries.len() > 1 {
-            let dot_y = ny + news_title_size * 0.3;
-            let dot_r = 2.5 * s;
-            let dot_gap = 8.0 * s;
-            let dots_w = entries.len() as f32 * (dot_r * 2.0 + dot_gap) - dot_gap;
-            let dot_x_start = news_x + news_w - news_pad - dots_w;
-            for i in 0..entries.len() {
-                let active = i == self.news_index.min(entries.len() - 1);
-                elements.push(MenuElement::Rect {
-                    x: dot_x_start + i as f32 * (dot_r * 2.0 + dot_gap),
-                    y: dot_y,
-                    w: dot_r * 2.0,
-                    h: dot_r * 2.0,
-                    corner_radius: dot_r,
-                    color: if active {
-                        [accent[0], accent[1], accent[2], 0.8]
-                    } else {
-                        [1.0, 1.0, 1.0, 0.15]
-                    },
-                });
-            }
-        }
-        ny += label_h;
-
-        let ver_w = text_width_fn(&entry.version, news_body_size);
-        elements.push(MenuElement::Text {
-            x: nx,
-            y: ny,
-            text: entry.version.clone(),
-            scale: news_body_size,
-            color: news_ver_col,
-            centered: false,
-        });
-        elements.push(MenuElement::Text {
-            x: nx + ver_w + 6.0 * s,
-            y: ny,
-            text: entry.date.clone(),
-            scale: news_body_size,
-            color: news_dim_col,
-            centered: false,
-        });
-        ny += news_body_size + 10.0 * s;
-
-        elements.push(MenuElement::Rect {
-            x: nx,
-            y: ny,
-            w: nw,
-            h: 1.0,
-            corner_radius: 0.5,
-            color: [1.0, 1.0, 1.0, 0.04],
-        });
-        ny += 8.0 * s;
-
-        for line in &entry.lines {
-            elements.push(MenuElement::Text {
-                x: nx + 8.0 * s,
-                y: ny,
-                text: line.clone(),
-                scale: news_body_size,
-                color: news_text_col,
-                centered: false,
-            });
-            ny += news_line_h;
-        }
-
-        ny += nav_gap;
-        let nav_w = (nw - nav_gap) / 2.0;
-        let nav_r = 6.0 * s;
-        let nav_font = 9.0 * s;
-        let cur_idx = self.news_index.min(entries.len() - 1);
-        let has_prev = cur_idx > 0;
-        let has_next = cur_idx + 1 < entries.len();
-
-        let prev_rect = [nx, ny, nav_w, nav_h];
-        let prev_hovered = has_prev && common::hit_test(cursor, prev_rect);
-        any_hovered |= prev_hovered;
-        elements.push(MenuElement::Rect {
-            x: prev_rect[0],
-            y: prev_rect[1],
-            w: prev_rect[2],
-            h: prev_rect[3],
-            corner_radius: nav_r,
-            color: if prev_hovered {
-                glass_hover
-            } else if has_prev {
-                glass
-            } else {
-                [0.05, 0.05, 0.1, 0.3]
-            },
-        });
-        elements.push(MenuElement::Text {
-            x: prev_rect[0] + prev_rect[2] / 2.0,
-            y: prev_rect[1] + (prev_rect[3] - nav_font) / 2.0,
-            text: "Newer".into(),
-            scale: nav_font,
-            color: if has_prev { text_col } else { news_dim_col },
-            centered: true,
-        });
-        if clicked && prev_hovered {
-            self.news_index -= 1;
-        }
-
-        let next_rect = [nx + nav_w + nav_gap, ny, nav_w, nav_h];
-        let next_hovered = has_next && common::hit_test(cursor, next_rect);
-        any_hovered |= next_hovered;
-        elements.push(MenuElement::Rect {
-            x: next_rect[0],
-            y: next_rect[1],
-            w: next_rect[2],
-            h: next_rect[3],
-            corner_radius: nav_r,
-            color: if next_hovered {
-                glass_hover
-            } else if has_next {
-                glass
-            } else {
-                [0.05, 0.05, 0.1, 0.3]
-            },
-        });
-        elements.push(MenuElement::Text {
-            x: next_rect[0] + next_rect[2] / 2.0,
-            y: next_rect[1] + (next_rect[3] - nav_font) / 2.0,
-            text: "Older".into(),
-            scale: nav_font,
-            color: if has_next { text_col } else { news_dim_col },
-            centered: true,
-        });
-        if clicked && next_hovered {
-            self.news_index += 1;
         }
 
         let icon_area_y = panel_y + panel_h - panel_pad - icon_size;
@@ -867,6 +660,7 @@ impl MainMenu {
             });
 
             if clicked && hovered {
+                any_clicked = true;
                 match icon {
                     ICON_USER => {
                         if self.auth_account.is_none() {
@@ -1053,6 +847,7 @@ impl MainMenu {
             action,
             cursor_pointer: any_hovered,
             blur: 1.0,
+            clicked_button: any_clicked,
         }
     }
 
@@ -1179,6 +974,7 @@ impl MainMenu {
             action: MenuAction::None,
             cursor_pointer: any_hovered,
             blur: 2.0,
+            clicked_button: false,
         }
     }
 
@@ -1270,6 +1066,7 @@ impl MainMenu {
                     action: MenuAction::None,
                     cursor_pointer: any_hovered,
                     blur: 2.0,
+                    clicked_button: false,
                 };
             }
             AuthStatus::Exchanging => {
@@ -1349,6 +1146,7 @@ impl MainMenu {
                     action: MenuAction::None,
                     cursor_pointer: any_hovered,
                     blur: 2.0,
+                    clicked_button: false,
                 };
             }
         }
@@ -1376,6 +1174,7 @@ impl MainMenu {
             action: MenuAction::None,
             cursor_pointer: any_hovered,
             blur: 2.0,
+            clicked_button: false,
         }
     }
 
@@ -1418,6 +1217,7 @@ impl MainMenu {
                 action: MenuAction::None,
                 cursor_pointer: false,
                 blur: 1.0,
+                clicked_button: false,
             };
         }
 
@@ -1672,6 +1472,7 @@ impl MainMenu {
             action,
             cursor_pointer: any_hovered,
             blur: 2.0,
+            clicked_button: false,
         }
     }
 
@@ -1769,6 +1570,7 @@ impl MainMenu {
             action: MenuAction::None,
             cursor_pointer: any_hovered,
             blur: 2.0,
+            clicked_button: false,
         }
     }
 
@@ -1888,6 +1690,7 @@ impl MainMenu {
             action,
             cursor_pointer: any_hovered,
             blur: 2.0,
+            clicked_button: false,
         }
     }
 
@@ -2051,6 +1854,7 @@ impl MainMenu {
             action: MenuAction::None,
             cursor_pointer: any_hovered,
             blur: 2.0,
+            clicked_button: false,
         }
     }
 
@@ -2151,6 +1955,7 @@ impl MainMenu {
             action: MenuAction::None,
             cursor_pointer: any_hovered,
             blur: 2.0,
+            clicked_button: false,
         }
     }
 
@@ -2204,7 +2009,11 @@ impl MainMenu {
             ["Particles: All", "Mipmap Levels: 4"],
         ];
         let rd_frac = (self.render_distance as f32 - 2.0) / 30.0;
-        let sliders: &[(&str, f32)] = &[("Render Distance:", rd_frac)];
+        let sd_frac = (self.simulation_distance as f32 - 5.0) / 27.0;
+        let sliders: &[(&str, f32)] = &[
+            ("Render Distance:", rd_frac),
+            ("Simulation Distance:", sd_frac),
+        ];
         self.build_options_grid(
             sw,
             sh,
@@ -2348,6 +2157,10 @@ impl MainMenu {
                 self.render_distance = (2.0 + value * 30.0).round() as u32;
                 self.save_settings();
             }
+            if *prefix == "Simulation Distance:" {
+                self.simulation_distance = (5.0 + value * 27.0).round() as u32;
+                self.save_settings();
+            }
         }
 
         let done_w = btn_w * 2.0 + gap;
@@ -2373,6 +2186,7 @@ impl MainMenu {
             action: MenuAction::None,
             cursor_pointer: any_hovered,
             blur: 2.0,
+            clicked_button: false,
         }
     }
 
@@ -2446,6 +2260,7 @@ impl MainMenu {
             action: MenuAction::None,
             cursor_pointer: any_hovered,
             blur: 2.0,
+            clicked_button: false,
         }
     }
 }
@@ -2456,6 +2271,7 @@ fn empty_result(blur: f32) -> MainMenuResult {
         action: MenuAction::None,
         cursor_pointer: false,
         blur,
+        clicked_button: false,
     }
 }
 
@@ -2871,57 +2687,6 @@ impl DropdownStyle {
 
         hovered
     }
-}
-
-const GITHUB_RELEASES_URL: &str =
-    "https://api.github.com/repos/Purdze/POMC/releases?per_page=10";
-
-async fn fetch_github_releases() -> Result<Vec<ChangelogEntry>, String> {
-    #[derive(serde::Deserialize)]
-    struct GhRelease {
-        tag_name: String,
-        published_at: Option<String>,
-        body: Option<String>,
-    }
-
-    let client = reqwest::Client::builder()
-        .user_agent("POMC-Client")
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let releases: Vec<GhRelease> = client
-        .get(GITHUB_RELEASES_URL)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(releases
-        .into_iter()
-        .map(|r| {
-            let date = r
-                .published_at
-                .as_deref()
-                .unwrap_or("")
-                .chars()
-                .take(10)
-                .collect();
-            let lines = r
-                .body
-                .unwrap_or_default()
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| l.trim_start_matches(['*', '-', ' ']).to_string())
-                .collect();
-            ChangelogEntry {
-                version: r.tag_name,
-                date,
-                lines,
-            }
-        })
-        .collect())
 }
 
 fn ease_out_cubic(t: f32) -> f32 {

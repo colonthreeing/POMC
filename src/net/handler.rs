@@ -20,9 +20,12 @@ pub fn handle_game_packet(
                     min_y: dim.min_y,
                 });
             }
+            let _ = event_tx.try_send(NetworkEvent::GameModeChanged {
+                game_mode: p.common.game_type as u8,
+            });
         }
         ClientboundGamePacket::LevelChunkWithLight(p) => {
-            log::debug!(
+            log::trace!(
                 "Chunk [{}, {}] ({} block entities)",
                 p.x,
                 p.z,
@@ -61,7 +64,7 @@ pub fn handle_game_packet(
         }
         ClientboundGamePacket::ChunkBatchFinished(p) => {
             let desired = (p.batch_size as f32).max(25.0);
-            log::debug!(
+            log::trace!(
                 "ChunkBatchFinished: batch_size={}, responding with desired={desired}",
                 p.batch_size
             );
@@ -133,6 +136,22 @@ pub fn handle_game_packet(
                 game_time: p.game_time,
                 day_time: p.day_time,
             });
+        }
+        ClientboundGamePacket::SetChunkCacheRadius(p) => {
+            let _ = event_tx.try_send(NetworkEvent::ServerViewDistance { distance: p.radius });
+        }
+        ClientboundGamePacket::SetSimulationDistance(p) => {
+            let _ = event_tx.try_send(NetworkEvent::ServerSimulationDistance {
+                distance: p.simulation_distance,
+            });
+        }
+        ClientboundGamePacket::GameEvent(p) => {
+            use azalea_protocol::packets::game::c_game_event::EventType;
+            if p.event == EventType::ChangeGameMode {
+                let _ = event_tx.try_send(NetworkEvent::GameModeChanged {
+                    game_mode: p.param as u8,
+                });
+            }
         }
         ClientboundGamePacket::Disconnect(p) => {
             log::warn!("Disconnected: {}", p.reason);
