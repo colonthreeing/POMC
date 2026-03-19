@@ -91,6 +91,7 @@ function App() {
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
+  const [authNotice, setAuthNotice] = useState(false);
   const [status, setStatus] = useState("");
   const [news, setNews] = useState<PatchNote[]>([]);
   const [skinUrl, setSkinUrl] = useState<string | null>(null);
@@ -142,10 +143,15 @@ function App() {
       .catch((e) => console.error("Failed to fetch versions:", e));
   }, [loadSkin]);
 
-  const addAccount = useCallback(async () => {
-    setAuthLoading(true);
+  const startAddAccount = useCallback(() => {
     setAccountDropdownOpen(false);
-    setStatus("Opening browser — approve the sign-in...");
+    setAuthNotice(true);
+  }, []);
+
+  const confirmAddAccount = useCallback(async () => {
+    setAuthNotice(false);
+    setAuthLoading(true);
+    setStatus("Opening browser - approve the sign-in...");
     try {
       const acc = await invoke<AuthAccount>("add_account");
       setAccounts((prev) => {
@@ -192,7 +198,7 @@ function App() {
       await invoke("ensure_assets", { version: selectedVersion });
       setStatus("Launching POMC...");
       const result = await invoke<string>("launch_game", {
-        username,
+        uuid: account?.uuid || null,
         server: server || null,
       });
       setStatus(result);
@@ -300,7 +306,7 @@ function App() {
                     ))}
                     <button
                       className="account-add"
-                      onClick={addAccount}
+                      onClick={startAddAccount}
                       disabled={authLoading}
                     >
                       <HiUserPlus />
@@ -333,7 +339,7 @@ function App() {
             ) : (
               <button
                 className="sign-in-sidebar"
-                onClick={addAccount}
+                onClick={startAddAccount}
                 disabled={authLoading}
               >
                 {authLoading ? "Signing in..." : "SIGN IN"}
@@ -640,6 +646,31 @@ function App() {
           )}
         </main>
       </div>
+
+      {authNotice && (
+        <div className="dialog-overlay" onClick={() => setAuthNotice(false)}>
+          <div className="dialog" onClick={(e) => e.stopPropagation()}>
+            <h2 className="dialog-title">Sign In Notice</h2>
+            <p className="auth-notice-text">
+              POMC is currently awaiting approval for direct Microsoft sign-in.
+              Until approved, you'll be redirected to enter a code in your
+              browser to authenticate. This is a one-time process - your
+              session will be saved securely.
+            </p>
+            <div className="dialog-actions">
+              <button
+                className="dialog-cancel"
+                onClick={() => setAuthNotice(false)}
+              >
+                Cancel
+              </button>
+              <button className="dialog-save" onClick={confirmAddAccount}>
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {editingInstall && (
         <div className="dialog-overlay" onClick={() => { setEditingInstall(null); setDialogVersionOpen(false); }}>

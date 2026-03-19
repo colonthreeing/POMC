@@ -235,23 +235,40 @@ pub async fn ensure_assets(app: tauri::AppHandle, version: String) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn launch_game(username: String, server: Option<String>) -> Result<String, String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .parent()
-        .ok_or("no parent dir")?
-        .join("pomc.exe");
-
-    if !exe.exists() {
-        return Err(format!("Game binary not found at {}", exe.display()));
-    }
-
+pub async fn launch_game(
+    uuid: Option<String>,
+    server: Option<String>,
+) -> Result<String, String> {
+    let exe = find_client_binary()?;
     let assets = crate::downloader::assets_dir();
+
+    let account = uuid
+        .as_deref()
+        .and_then(crate::auth::try_restore);
+
+    let username = account
+        .as_ref()
+        .map(|a| a.username.clone())
+        .unwrap_or_else(|| "Steve".into());
+
+    let token: String = (0..32)
+        .map(|_| format!("{:02x}", rand::random::<u8>()))
+        .collect();
+    let token_path = std::env::temp_dir().join("pomc_launch_token");
+    std::fs::write(&token_path, &token).map_err(|e| e.to_string())?;
+
     let mut cmd = tokio::process::Command::new(&exe);
     cmd.arg("--username")
         .arg(&username)
         .arg("--assets-dir")
-        .arg(assets.to_string_lossy().as_ref());
+        .arg(assets.to_string_lossy().as_ref())
+        .arg("--launch-token")
+        .arg(token_path.to_string_lossy().as_ref());
+
+    if let Some(acc) = &account {
+        cmd.arg("--uuid").arg(&acc.uuid);
+        cmd.arg("--access-token").arg(&acc.access_token);
+    }
 
     if let Some(server) = &server {
         cmd.arg("--server").arg(server);
@@ -260,4 +277,38 @@ pub async fn launch_game(username: String, server: Option<String>) -> Result<Str
     cmd.spawn().map_err(|e| e.to_string())?;
 
     Ok(format!("Launched as {username}"))
+}
+
+fn find_client_binary() -> Result<std::path::PathBuf, String> {
+    let candidates = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("pomc.exe"))),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| {
+                p.parent()?
+                    .parent()?
+                    .parent()?
+                    .parent()
+                    .map(|d| d.join("target").join("release").join("pomc.exe"))
+            }),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| {
+                p.parent()?
+                    .parent()?
+                    .parent()?
+                    .parent()
+                    .map(|d| d.join("target").join("debug").join("pomc.exe"))
+            }),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("Game binary not found. Build it with: cargo build --release".into())
 }

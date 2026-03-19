@@ -19,6 +19,23 @@ fn main() {
     env_logger::init();
 
     let args = args::LaunchArgs::parse();
+
+    match &args.launch_token {
+        Some(path) => {
+            let token_path = std::path::Path::new(path);
+            if !token_path.exists() {
+                eprintln!("Please use the POMC Launcher to start the game.");
+                std::process::exit(1);
+            }
+            let _ = std::fs::remove_file(token_path);
+        }
+        None => {
+            eprintln!("Please use the POMC Launcher to start the game.");
+            eprintln!("Download it at: https://github.com/Purdze/POMC");
+            std::process::exit(1);
+        }
+    }
+
     let data = data::DataDir::resolve(args.game_dir.as_deref(), args.assets_dir.as_deref());
 
     if let Err(e) = data.ensure_dirs() {
