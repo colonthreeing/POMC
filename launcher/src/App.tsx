@@ -1,13 +1,8 @@
 import { useCallback, useEffect } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  HiMinus,
-  HiSquare2Stack,
-  HiXMark,
   HiChevronDown,
-  HiCube,
   HiFolder,
 } from "react-icons/hi2";
 import { AuthAccount, GameVersion, PatchNote } from "./lib/types";
@@ -52,9 +47,8 @@ function App() {
     setSkinUrl,
     setSelectedNote,
     username,
+    useConsole,
   } = useAppStateContext();
-
-  const appWindow = getCurrentWindow();
 
   const openPatchNote = useCallback(async (note: PatchNote) => {
     try {
@@ -145,6 +139,7 @@ function App() {
       const result = await invoke<string>("launch_game", {
         uuid: account?.uuid || null,
         server: server || null,
+        debugEnabled: useConsole || null,
       });
       setStatus(result);
     } catch (e) {
@@ -154,7 +149,7 @@ function App() {
       setLaunching(false);
       setStatus("");
     }, 3000);
-  }, [username, server, selectedVersion]);
+  }, [username, server, selectedVersion, useConsole]);
 
   return (
     <div className="app">
