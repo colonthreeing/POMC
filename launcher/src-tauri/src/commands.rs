@@ -260,7 +260,7 @@ pub async fn launch_game(
             None => {
                 WebviewWindowBuilder::new(
                     &app,
-                    format!("console"),
+                    "console",
                     WebviewUrl::App("console".into()),
                 )
                 .title("POMC Debugger")
