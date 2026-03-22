@@ -1,11 +1,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use tauri::Manager;
+use tokio::sync::Mutex;
+
 mod auth;
 mod commands;
 mod downloader;
 
+#[derive(Default)]
+struct AppState {
+    client_logs: Vec<String>
+}
+
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            app.manage(Mutex::new(AppState::default()));
+            Ok(())
+        })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -19,6 +31,7 @@ fn main() {
             commands::get_patch_notes,
             commands::get_patch_content,
             commands::launch_game,
+            commands::get_client_logs
         ])
         .run(tauri::generate_context!())
         .expect("failed to run POMC launcher");
