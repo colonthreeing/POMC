@@ -4,6 +4,8 @@ export default function SettingsPage() {
   const {
     keepOpen,
     setKeepOpen,
+    useConsole,
+    setUseConsole
   } = useAppStateContext();
 
   return (
@@ -40,6 +42,25 @@ export default function SettingsPage() {
             <button
               className={`settings-toggle ${keepOpen ? "on" : ""}`}
               onClick={() => setKeepOpen(!keepOpen)}
+            >
+              <div className="settings-toggle-knob" />
+            </button>
+          </div>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-row-info">
+            <span className="settings-row-label">
+              Launch with console
+            </span>
+            <span className="settings-row-desc">
+              Automatically open a window with all output from the client- useful when debugging.
+            </span>
+          </div>
+          <div className="settings-row-control">
+            <button
+              className={`settings-toggle ${useConsole ? "on" : ""}`}
+              onClick={() => setUseConsole(!useConsole)}
             >
               <div className="settings-toggle-knob" />
             </button>

@@ -1,13 +1,8 @@
 import { useCallback, useEffect } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  HiMinus,
-  HiSquare2Stack,
-  HiXMark,
   HiChevronDown,
-  HiCube,
   HiFolder,
 } from "react-icons/hi2";
 import { AuthAccount, GameVersion, PatchNote } from "./lib/types";
@@ -20,6 +15,7 @@ import ServersPage from "./pages/Servers";
 import FriendsPage from "./pages/Friends";
 import NewsPage from "./pages/News";
 import SettingsPage from "./pages/Settings";
+import Titlebar from "./components/Titlebar";
 
 function App() {
   const {
@@ -49,9 +45,8 @@ function App() {
     setSkinUrl,
     setSelectedNote,
     username,
+    useConsole,
   } = useAppStateContext();
-
-  const appWindow = getCurrentWindow();
 
   const openPatchNote = useCallback(async (note: PatchNote) => {
     try {
@@ -64,16 +59,6 @@ function App() {
       console.error("Failed to fetch content:", e);
     }
   }, []);
-
-  const minimize = () => {
-    appWindow.minimize();
-  };
-  const toggleMaximize = () => {
-    appWindow.toggleMaximize();
-  };
-  const close = () => {
-    appWindow.close();
-  };
 
   const loadSkin = useCallback((uuid: string) => {
     invoke<string>("get_skin_url", { uuid })
@@ -147,6 +132,7 @@ function App() {
       const result = await invoke<string>("launch_game", {
         uuid: account?.uuid || null,
         server: server || null,
+        debugEnabled: useConsole || null,
       });
       setStatus(result);
     } catch (e) {
@@ -156,32 +142,11 @@ function App() {
       setLaunching(false);
       setStatus("");
     }, 3000);
-  }, [username, server, selectedVersion]);
+  }, [username, server, selectedVersion, useConsole]);
 
   return (
     <div className="app">
-      <div className="titlebar" data-tauri-drag-region>
-        <div className="titlebar-left" data-tauri-drag-region>
-          <span className="titlebar-icon"><HiCube /></span>
-        </div>
-        <span className="titlebar-title" data-tauri-drag-region>
-          POMC Launcher
-        </span>
-        <div className="titlebar-controls">
-          <button className="tb-btn" onClick={minimize}>
-            <HiMinus />
-          </button>
-          <button className="tb-btn" onClick={toggleMaximize}>
-            <HiSquare2Stack />
-          </button>
-          <button
-            className="tb-btn tb-close"
-            onClick={close}
-          >
-            <HiXMark />
-          </button>
-        </div>
-      </div>
+      <Titlebar />
 
       <div className="layout">
         <Navbar

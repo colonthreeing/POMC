@@ -1,4 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::process::Stdio;
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    sync::Mutex,
+};
 
 #[derive(Deserialize)]
 struct MojangPatchNotes {
@@ -42,6 +49,22 @@ pub struct PatchNote {
 
 const PATCH_NOTES_URL: &str = "https://launchercontent.mojang.com/v2/javaPatchNotes.json";
 const IMAGE_BASE: &str = "https://launchercontent.mojang.com";
+
+#[derive(Clone, Serialize)]
+enum ConsoleEventType {
+    #[serde(rename = "message")]
+    Message,
+    #[serde(rename = "reset")]
+    Reset,
+}
+
+#[derive(Clone, Serialize)]
+struct ConsoleEvent {
+    #[serde(rename = "type")]
+    pub message_type: ConsoleEventType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub val: Option<String>,
+}
 
 #[tauri::command]
 pub async fn get_patch_notes(count: Option<usize>) -> Result<Vec<PatchNote>, String> {
@@ -220,7 +243,12 @@ pub async fn ensure_assets(app: tauri::AppHandle, version: String) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn launch_game(uuid: Option<String>, server: Option<String>) -> Result<String, String> {
+pub async fn launch_game(
+    app: AppHandle,
+    uuid: Option<String>,
+    server: Option<String>,
+    debug_enabled: Option<bool>,
+) -> Result<String, String> {
     let exe = find_client_binary()?;
     let assets = crate::downloader::assets_dir();
 
@@ -238,6 +266,37 @@ pub async fn launch_game(uuid: Option<String>, server: Option<String>) -> Result
     std::fs::write(&token_path, &token).map_err(|e| e.to_string())?;
 
     let mut cmd = tokio::process::Command::new(&exe);
+
+    cmd.stderr(Stdio::piped());
+
+    if debug_enabled.unwrap_or(false) {
+        cmd.env("RUST_LOG", "debug");
+        cmd.env("RUST_BACKTRACE", "full");
+
+        match app.webview_windows().get("console") {
+            None => {
+                WebviewWindowBuilder::new(&app, "console", WebviewUrl::App("console".into()))
+                    .title("POMC Debugger")
+                    .decorations(false)
+                    .build()
+                    .unwrap();
+            }
+            Some(window) => {
+                let _ = app
+                    .emit(
+                        "console_message",
+                        ConsoleEvent {
+                            message_type: ConsoleEventType::Reset,
+                            val: None,
+                        },
+                    )
+                    .map_err(|e| e.to_string());
+
+                window.set_focus().expect("failed to focus window");
+            }
+        }
+    }
+
     cmd.arg("--username")
         .arg(&username)
         .arg("--assets-dir")
@@ -257,9 +316,68 @@ pub async fn launch_game(uuid: Option<String>, server: Option<String>) -> Result
     #[cfg(unix)]
     cmd.process_group(0);
 
-    cmd.spawn().map_err(|e| e.to_string())?;
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+
+    let stderr = child
+        .stderr
+        .take()
+        .expect("couldn't take stderr from game process");
+
+    let mut reader = BufReader::new(stderr).lines();
+
+    tokio::spawn(async move {
+        let status = child
+            .wait()
+            .await
+            .expect("client process encountered an error");
+
+        println!("client status was: {}", status);
+    });
+
+    let app_handle = app.clone();
+
+    tokio::spawn(async move {
+        loop {
+            match reader.next_line().await {
+                Ok(Some(line)) => {
+                    let _ = app
+                        .emit(
+                            "console_message",
+                            ConsoleEvent {
+                                message_type: ConsoleEventType::Message,
+                                val: Some(line.clone()),
+                            },
+                        )
+                        .map_err(|e| e.to_string());
+
+                    let state = app_handle.state::<Mutex<crate::AppState>>();
+                    let mut state = state.lock().await;
+
+                    state.client_logs.push_back(line);
+
+                    if state.client_logs.len() > 10_000 {
+                        state.client_logs.pop_front();
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("reader error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
 
     Ok(format!("Launched as {username}"))
+}
+
+#[tauri::command]
+pub async fn get_client_logs(
+    state: State<'_, Mutex<crate::AppState>>,
+) -> Result<VecDeque<String>, ()> {
+    let state = state.lock().await;
+
+    Ok(state.client_logs.clone())
 }
 
 fn find_client_binary() -> Result<std::path::PathBuf, String> {
