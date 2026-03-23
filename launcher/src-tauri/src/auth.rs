@@ -191,7 +191,7 @@ pub async fn oauth_sign_in() -> Result<AuthAccount, String> {
     let code = listen_for_callback(&state).await?;
 
     let client = reqwest::Client::new();
-    let msa: MsaTokenResponse = client
+    let resp = client
         .post("https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
         .form(&[
             ("client_id", CLIENT_ID),
@@ -203,10 +203,20 @@ pub async fn oauth_sign_in() -> Result<AuthAccount, String> {
         ])
         .send()
         .await
-        .map_err(|e| format!("Token exchange failed: {e}"))?
-        .json()
+        .map_err(|e| format!("Token exchange failed: {e}"))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
         .await
-        .map_err(|e| format!("Token parse failed: {e}"))?;
+        .map_err(|e| format!("Token exchange read failed: {e}"))?;
+
+    if !status.is_success() {
+        return Err(format!("Auth failed ({status}): {body}"));
+    }
+
+    let msa: MsaTokenResponse =
+        serde_json::from_str(&body).map_err(|e| format!("Token parse failed: {e}"))?;
 
     finish_msa_exchange(&client, &msa).await
 }
@@ -264,7 +274,10 @@ async fn listen_for_callback(expected_state: &str) -> Result<String, String> {
         return Err("State mismatch".to_string());
     }
 
-    let code = params.get("code").ok_or("Missing auth code")?.to_string();
+    let raw_code = params.get("code").ok_or("Missing auth code")?;
+    let code = urlencoding::decode(raw_code)
+        .map_err(|e| format!("Failed to decode auth code: {e}"))?
+        .into_owned();
 
     send_http_response(
         &mut stream,
