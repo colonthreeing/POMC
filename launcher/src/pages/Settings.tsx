@@ -1,12 +1,7 @@
-import { useAppStateContext } from "../lib/state"
+import { useAppStateContext } from "../lib/state";
 
 export default function SettingsPage() {
-  const {
-    keepOpen,
-    setKeepOpen,
-    useConsole,
-    setUseConsole
-  } = useAppStateContext();
+  const { launcherSettings } = useAppStateContext();
 
   return (
     <div className="page settings-page">
@@ -18,30 +13,24 @@ export default function SettingsPage() {
         <div className="settings-row">
           <div className="settings-row-info">
             <span className="settings-row-label">Language</span>
-            <span className="settings-row-desc">
-              Display language for the launcher
-            </span>
+            <span className="settings-row-desc">Display language for the launcher</span>
           </div>
           <div className="settings-row-control">
-            <button className="settings-select">
-              English
-            </button>
+            <button className="settings-select">{launcherSettings.language}</button>
           </div>
         </div>
 
         <div className="settings-row">
           <div className="settings-row-info">
-            <span className="settings-row-label">
-              Keep launcher open
-            </span>
-            <span className="settings-row-desc">
-              Keep the launcher open after the game starts
-            </span>
+            <span className="settings-row-label">Keep launcher open</span>
+            <span className="settings-row-desc">Keep the launcher open after the game starts</span>
           </div>
           <div className="settings-row-control">
             <button
-              className={`settings-toggle ${keepOpen ? "on" : ""}`}
-              onClick={() => setKeepOpen(!keepOpen)}
+              className={`settings-toggle ${launcherSettings.keepLauncherOpen ? "on" : ""}`}
+              onClick={() =>
+                launcherSettings.setKeepLauncherOpen(!launcherSettings.keepLauncherOpen)
+              }
             >
               <div className="settings-toggle-knob" />
             </button>
@@ -50,17 +39,17 @@ export default function SettingsPage() {
 
         <div className="settings-row">
           <div className="settings-row-info">
-            <span className="settings-row-label">
-              Launch with console
-            </span>
+            <span className="settings-row-label">Launch with console</span>
             <span className="settings-row-desc">
               Automatically open a window with all output from the client- useful when debugging.
             </span>
           </div>
           <div className="settings-row-control">
             <button
-              className={`settings-toggle ${useConsole ? "on" : ""}`}
-              onClick={() => setUseConsole(!useConsole)}
+              className={`settings-toggle ${launcherSettings.launchWithConsole ? "on" : ""}`}
+              onClick={() =>
+                launcherSettings.setLaunchWithConsole(!launcherSettings.launchWithConsole)
+              }
             >
               <div className="settings-toggle-knob" />
             </button>
@@ -68,5 +57,5 @@ export default function SettingsPage() {
         </div>
       </div>
     </div>
-  )
+  );
 }
