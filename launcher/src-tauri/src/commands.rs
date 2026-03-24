@@ -163,8 +163,7 @@ pub fn get_all_accounts() -> Vec<crate::auth::AuthAccount> {
 
 #[tauri::command]
 pub async fn add_account() -> Result<crate::auth::AuthAccount, String> {
-    let (_, device_code, expires_in, interval) = crate::auth::start_device_code_flow().await?;
-    crate::auth::poll_for_token(&device_code, expires_in, interval).await
+    crate::auth::oauth_sign_in().await
 }
 
 #[tauri::command]
@@ -314,10 +313,11 @@ pub async fn launch_game(
         cmd.arg("--server").arg(server);
     }
 
+    #[cfg(unix)]
+    cmd.process_group(0);
+
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
 
-    // get stderr because the logger
-    // uses it by default for all logging
     let stderr = child
         .stderr
         .take()
@@ -336,7 +336,6 @@ pub async fn launch_game(
 
     let app_handle = app.clone();
 
-    // TODO: switch to using a Channel instead of a event stream, see https://v2.tauri.app/develop/calling-frontend/#channels
     tokio::spawn(async move {
         loop {
             match reader.next_line().await {
@@ -360,7 +359,7 @@ pub async fn launch_game(
                         state.client_logs.pop_front();
                     }
                 }
-                Ok(None) => break, // EOF
+                Ok(None) => break,
                 Err(e) => {
                     eprintln!("reader error: {}", e);
                     break;

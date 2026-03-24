@@ -14,6 +14,11 @@ struct AppState {
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    if std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").is_err() {
+        unsafe { std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "0") };
+    }
+
     tauri::Builder::default()
         .setup(|app| {
             app.manage(Mutex::new(AppState::default()));

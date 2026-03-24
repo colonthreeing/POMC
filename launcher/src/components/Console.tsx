@@ -46,16 +46,12 @@ export default function Console() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
-    // when true, the component is still mounted
-    // so we won't refetch logs & reregister the listener
-    let active = true;
+    let eventsRegistered = false;
 
     const initListener = async () => {
-      console.debug("initing log listener");
-
       const initialLogs = await getLogs();
 
-      if (!active) return;
+      if (eventsRegistered) return;
 
       setLogs(initialLogs);
 
@@ -65,19 +61,15 @@ export default function Console() {
           let recv = event.payload;
           switch (recv.type) {
             case "message":
-              // we can always use `as string` because rust always passes a value when it is an actual log.
               setLogs((prevLogs) => {
-                const updatedLogs = [...prevLogs, recv.val as string]
-                const maxLogs = 10_000
+                const updatedLogs = [...prevLogs, recv.val as string];
+                const maxLogs = 10_000;
 
                 if (updatedLogs.length > maxLogs) {
-                  // theoretically slicing from 1 should always work because messages come in one by one
-                  // the only time i can think of it not working would be if getLogs() returns more than the max logs
-                  // which would only happen once while running, so I think it should be OK
-                  return updatedLogs.slice(1)
+                  return updatedLogs.slice(1);
                 }
-                return updatedLogs
-              })
+                return updatedLogs;
+              });
 
               break;
 
@@ -85,12 +77,12 @@ export default function Console() {
               setLogs([]);
               break;
             default:
-              console.error(`Recieved bad event type '${recv.type}'.`, recv);
+              console.error(`Received bad event type '${recv.type}'.`, recv);
           }
         },
       );
 
-      if (!active) {
+      if (eventsRegistered) {
         unlistenFn();
         return;
       }
@@ -101,7 +93,7 @@ export default function Console() {
     initListener();
 
     return () => {
-      active = false;
+      eventsRegistered = true;
       unlisten?.();
     };
   }, []);
@@ -125,7 +117,6 @@ export default function Console() {
               <Log log={object} key={key} />
             ))}
             <div ref={bottomRef} />{" "}
-            {/* element at the bottom that can be scrolled to */}
           </div>
         </div>
         <div className="console-bottom-bar">

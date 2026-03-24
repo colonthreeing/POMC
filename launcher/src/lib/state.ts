@@ -9,7 +9,7 @@ const useAppState = () => {
 
   const [server] = useState("");
   const [keepOpen, setKeepOpen] = useState(true);
-  const [useConsole, setUseConsole] = useState(true);
+  const [useConsole, setUseConsole] = useState(false);
 
   const [modView, setModView] = useState<"list" | "grid">("list");
   const [modSearch, setModSearch] = useState("");
@@ -34,7 +34,6 @@ const useAppState = () => {
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
-  const [authNotice, setAuthNotice] = useState(false);
   const [status, setStatus] = useState("");
   const [news, setNews] = useState<PatchNote[]>([]);
   const [skinUrl, setSkinUrl] = useState<string | null>(null);
@@ -84,8 +83,6 @@ const useAppState = () => {
     setLaunching,
     authLoading,
     setAuthLoading,
-    authNotice,
-    setAuthNotice,
     status,
     setStatus,
     news,

@@ -6,7 +6,7 @@ pub(crate) mod shader;
 mod swapchain;
 pub(crate) mod util;
 
-pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 2;
+pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -64,11 +64,12 @@ enum RenderMode {
 
 #[derive(Default, Clone)]
 pub struct RenderTimings {
-    pub mesh_upload_ms: f32,
+    pub frame_ms: f32,
+    pub fence_ms: f32,
+    pub acquire_ms: f32,
     pub cull_ms: f32,
     pub draw_ms: f32,
-    pub overlay_ms: f32,
-    pub frame_ms: f32,
+    pub present_ms: f32,
 }
 
 pub struct Renderer {
@@ -612,6 +613,32 @@ impl Renderer {
         self.skin_preview.trigger_swing();
     }
 
+    pub fn load_player_skin(&mut self, uuid: &uuid::Uuid, rt: &tokio::runtime::Runtime) {
+        let uuid_str = uuid.to_string().replace('-', "");
+        let skin_pixels = rt.block_on(async { fetch_skin_texture(&uuid_str).await });
+        match skin_pixels {
+            Ok((pixels, w, h)) => {
+                self.hand_pipeline.reload_skin(
+                    &self.ctx.device,
+                    self.ctx.graphics_queue,
+                    self.ctx.command_pool,
+                    &self.ctx.allocator,
+                    &pixels,
+                    w,
+                    h,
+                );
+                self.skin_preview = SkinPreviewPipeline::new(
+                    &self.ctx.device,
+                    self.swapchain.render_pass,
+                    &self.ctx.allocator,
+                    self.hand_pipeline.skin_view(),
+                    self.hand_pipeline.skin_sampler(),
+                );
+            }
+            Err(e) => log::warn!("Failed to load player skin: {e}"),
+        }
+    }
+
     pub fn menu_text_width(&self, text: &str, scale: f32) -> f32 {
         self.menu_pipeline.text_width(text, scale)
     }
@@ -633,10 +660,13 @@ impl Renderer {
         let render_finished = self.ctx.render_finished[frame];
         let cmd = self.ctx.command_buffers[frame];
 
+        let t_fence = std::time::Instant::now();
         unsafe {
             self.ctx.device.wait_for_fences(&[fence], true, u64::MAX)?;
         }
+        let fence_ms = t_fence.elapsed().as_secs_f32() * 1000.0;
 
+        let t_acquire = std::time::Instant::now();
         let image_index = match unsafe {
             self.ctx.swapchain_loader.acquire_next_image(
                 self.swapchain.swapchain,
@@ -652,6 +682,7 @@ impl Renderer {
             }
             Err(e) => return Err(e.into()),
         };
+        let acquire_ms = t_acquire.elapsed().as_secs_f32() * 1000.0;
 
         if matches!(mode, RenderMode::World { .. }) {
             let uniform = CameraUniform::from_camera(&self.camera);
@@ -807,18 +838,11 @@ impl Renderer {
                         *swing_progress,
                     );
 
-                    let t_overlay = std::time::Instant::now();
                     self.menu_pipeline
                         .draw(&self.ctx.device, cmd, sw, sh, overlay);
-                    let overlay_ms = t_overlay.elapsed().as_secs_f32() * 1000.0;
 
-                    self.last_timings = RenderTimings {
-                        mesh_upload_ms: 0.0,
-                        cull_ms,
-                        draw_ms: 0.0,
-                        overlay_ms,
-                        frame_ms: frame_start.elapsed().as_secs_f32() * 1000.0,
-                    };
+                    self.last_timings.cull_ms = cull_ms;
+                    self.last_timings.frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
                 }
                 RenderMode::MainMenu {
                     scroll,
@@ -910,6 +934,7 @@ impl Renderer {
                 .swapchains(&swapchains)
                 .image_indices(&image_indices);
 
+            let t_present = std::time::Instant::now();
             match self
                 .ctx
                 .swapchain_loader
@@ -921,11 +946,74 @@ impl Renderer {
                 }
                 Err(e) => return Err(e.into()),
             }
+            let present_ms = t_present.elapsed().as_secs_f32() * 1000.0;
+            self.last_timings.fence_ms = fence_ms;
+            self.last_timings.acquire_ms = acquire_ms;
+            self.last_timings.present_ms = present_ms;
         }
 
         self.ctx.advance_frame();
         Ok(())
     }
+}
+
+async fn fetch_skin_texture(uuid: &str) -> Result<(Vec<u8>, u32, u32), String> {
+    #[derive(serde::Deserialize)]
+    struct SessionProfile {
+        properties: Vec<ProfileProperty>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ProfileProperty {
+        value: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct TexturesPayload {
+        textures: Textures,
+    }
+    #[derive(serde::Deserialize)]
+    struct Textures {
+        #[serde(rename = "SKIN")]
+        skin: Option<SkinTexture>,
+    }
+    #[derive(serde::Deserialize)]
+    struct SkinTexture {
+        url: String,
+    }
+
+    let url = format!("https://sessionserver.mojang.com/session/minecraft/profile/{uuid}");
+    let profile: SessionProfile = reqwest::get(&url)
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let value = &profile.properties.first().ok_or("No properties")?.value;
+
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|e| e.to_string())?;
+    let payload: TexturesPayload = serde_json::from_slice(&decoded).map_err(|e| e.to_string())?;
+
+    let skin_url = payload
+        .textures
+        .skin
+        .map(|s| s.url)
+        .ok_or("No skin texture")?;
+
+    let skin_bytes = reqwest::get(&skin_url)
+        .await
+        .map_err(|e| e.to_string())?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let img = image::load_from_memory(&skin_bytes).map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+    let w = rgba.width();
+    let h = rgba.height();
+    Ok((rgba.into_raw(), w, h))
 }
 
 impl Drop for Renderer {
