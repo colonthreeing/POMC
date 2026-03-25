@@ -11,11 +11,13 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+use crate::entity::EntityStore;
 use crate::net::NetworkEvent;
 use crate::physics::movement;
 use crate::player::interaction::InteractionState;
 use crate::player::LocalPlayer;
 use crate::renderer::chunk::mesher::MeshDispatcher;
+use crate::renderer::pipelines::entity_renderer::EntityRenderInfo;
 use crate::renderer::pipelines::menu_overlay::MenuElement;
 use crate::renderer::Renderer;
 use crate::ui::chat::ChatState;
@@ -42,6 +44,7 @@ pub enum WindowError {
 enum GameState {
     Menu,
     Connecting,
+    Loading,
     InGame,
 }
 
@@ -88,6 +91,7 @@ struct App {
     chat_sender: Option<crossbeam_channel::Sender<String>>,
     packet_sender: Option<crate::net::sender::PacketSender>,
     chunk_store: ChunkStore,
+    entity_store: EntityStore,
     assets_dir: PathBuf,
     game_dir: PathBuf,
     asset_index: Option<crate::assets::AssetIndex>,
@@ -179,6 +183,7 @@ impl App {
             chat_sender,
             packet_sender,
             chunk_store: ChunkStore::new(DEFAULT_RENDER_DISTANCE),
+            entity_store: EntityStore::new(),
             asset_index: crate::assets::AssetIndex::load(&assets_dir),
             assets_dir,
             game_dir: game_dir.clone(),
@@ -320,6 +325,7 @@ impl App {
         self.paused = false;
         self.position_set = false;
         self.chunk_store = ChunkStore::new(self.menu.render_distance);
+        self.entity_store.clear();
         if let Some(renderer) = &mut self.renderer {
             renderer.clear_chunk_meshes();
             self.mesh_dispatcher = Some(renderer.create_mesh_dispatcher());
@@ -344,14 +350,13 @@ impl App {
 
         while let Ok(event) = rx.try_recv() {
             processed += 1;
-            if processed > 512 {
+            if processed > 4096 {
                 break;
             }
             match event {
                 NetworkEvent::Connected => {
                     log::info!("Connected to server");
-                    self.state = GameState::InGame;
-                    self.apply_cursor_grab();
+                    self.state = GameState::Loading;
                 }
                 NetworkEvent::DimensionInfo { height, min_y } => {
                     log::info!("Dimension: height={height}, min_y={min_y}");
@@ -472,6 +477,64 @@ impl App {
                     self.sky_state.game_time = game_time;
                     self.sky_state.day_time = day_time;
                 }
+                NetworkEvent::EntitySpawned {
+                    id,
+                    entity_type,
+                    x,
+                    y,
+                    z,
+                    yaw,
+                    pitch,
+                    head_yaw,
+                } => {
+                    if crate::entity::is_living_mob(&entity_type) {
+                        self.entity_store.spawn_living(
+                            id,
+                            entity_type,
+                            glam::DVec3::new(x, y, z),
+                            yaw,
+                            pitch,
+                            head_yaw,
+                        );
+                    }
+                }
+                NetworkEvent::EntityMoved { id, dx, dy, dz } => {
+                    self.entity_store.move_living_delta(id, dx, dy, dz);
+                }
+                NetworkEvent::EntityMovedRotated {
+                    id,
+                    dx,
+                    dy,
+                    dz,
+                    yaw,
+                    pitch,
+                } => {
+                    self.entity_store.move_living_delta(id, dx, dy, dz);
+                    self.entity_store.update_living_rotation(id, yaw, pitch);
+                }
+                NetworkEvent::EntityTeleported {
+                    id,
+                    x,
+                    y,
+                    z,
+                    yaw,
+                    pitch,
+                } => {
+                    self.entity_store.teleport_living(id, x, y, z);
+                    self.entity_store.update_living_rotation(id, yaw, pitch);
+                }
+                NetworkEvent::EntitiesRemoved { ids } => {
+                    for id in ids {
+                        self.entity_store.remove_living(id);
+                    }
+                }
+                NetworkEvent::EntityHeadRotation { id, head_yaw } => {
+                    self.entity_store.update_head_rotation(id, head_yaw);
+                }
+                NetworkEvent::EntityItemData { .. } => {}
+                NetworkEvent::EntityBabyFlag { id, is_baby } => {
+                    self.entity_store.set_baby(id, is_baby);
+                }
                 NetworkEvent::Disconnected { reason } => {
                     log::warn!("Disconnected: {reason}");
                     disconnect_reason = Some(reason);
@@ -504,6 +567,7 @@ impl App {
 
         self.prev_player_pos = self.player.position;
         movement::tick(&mut self.player, &self.input, &self.chunk_store);
+        self.entity_store.tick_living();
 
         if let Some(renderer) = &mut self.renderer {
             renderer.update_fov(self.player.sprinting);
@@ -731,7 +795,7 @@ impl ApplicationHandler for App {
                 }
                 match self.state {
                     GameState::Menu => self.input.on_menu_key_event(&event),
-                    GameState::Connecting => {
+                    GameState::Connecting | GameState::Loading => {
                         if event.state.is_pressed() {
                             if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
                                 self.disconnect_to_menu(None);
@@ -792,7 +856,10 @@ impl ApplicationHandler for App {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
                 };
-                if matches!(self.state, GameState::Menu | GameState::Connecting) {
+                if matches!(
+                    self.state,
+                    GameState::Menu | GameState::Connecting | GameState::Loading
+                ) {
                     self.input.on_menu_scroll(scroll);
                 } else if !self.inventory_open {
                     self.input.on_scroll(scroll);
@@ -803,8 +870,10 @@ impl ApplicationHandler for App {
                     .on_cursor_moved(position.x as f32, position.y as f32);
             }
             WindowEvent::MouseInput { state, button, .. }
-                if matches!(self.state, GameState::Menu | GameState::Connecting)
-                    || self.paused
+                if matches!(
+                    self.state,
+                    GameState::Menu | GameState::Connecting | GameState::Loading
+                ) || self.paused
                     || self.inventory_open
                     || self.input.is_cursor_captured() =>
             {
@@ -913,8 +982,39 @@ impl ApplicationHandler for App {
                                 }
                             }
                         }
-                        GameState::Connecting => {
+                        GameState::Connecting | GameState::Loading => {
                             self.drain_network_events();
+                            if matches!(self.state, GameState::Menu) {
+                                break 'redraw;
+                            }
+
+                            if matches!(self.state, GameState::Loading) {
+                                if let (Some(dispatcher), Some(renderer)) =
+                                    (&self.mesh_dispatcher, &mut self.renderer)
+                                {
+                                    for mesh in dispatcher.drain_results() {
+                                        renderer.upload_chunk_mesh(&mesh);
+                                    }
+                                }
+
+                                let ready = self.position_set
+                                    && self
+                                        .renderer
+                                        .as_ref()
+                                        .is_some_and(|r| r.loaded_chunk_count() > 0);
+
+                                if ready {
+                                    self.state = GameState::InGame;
+                                    self.apply_cursor_grab();
+                                    break 'redraw;
+                                }
+                            }
+
+                            let status_text = if matches!(self.state, GameState::Loading) {
+                                "Loading terrain..."
+                            } else {
+                                "Connecting to the server..."
+                            };
 
                             self.panorama_scroll += dt * 0.01;
                             if self.panorama_scroll > 1.0 {
@@ -941,7 +1041,7 @@ impl ApplicationHandler for App {
                                 elements.push(MenuElement::Text {
                                     x: cx,
                                     y: cy - fs,
-                                    text: "Connecting to the server...".into(),
+                                    text: status_text.into(),
                                     scale: fs,
                                     color: WHITE,
                                     centered: true,
@@ -1160,6 +1260,40 @@ impl ApplicationHandler for App {
                                     .get_swing_progress(self.tick_accumulator / TICK_RATE);
                                 let destroy_info = self.interaction.destroy_stage();
 
+                                let alpha = self.tick_accumulator / TICK_RATE;
+                                let entity_renders: Vec<EntityRenderInfo> = self
+                                    .entity_store
+                                    .living
+                                    .values()
+                                    .map(|e| {
+                                        let pos = e.prev_position.lerp(e.position, alpha as f64);
+                                        let body_yaw = e.prev_body_yaw
+                                            + (e.body_yaw - e.prev_body_yaw) * alpha;
+                                        let head_yaw = e.prev_head_yaw
+                                            + (e.head_yaw - e.prev_head_yaw) * alpha;
+                                        EntityRenderInfo {
+                                            x: pos.x,
+                                            y: pos.y,
+                                            z: pos.z,
+                                            yaw: body_yaw,
+                                            pitch: e.prev_pitch + (e.pitch - e.prev_pitch) * alpha,
+                                            head_yaw,
+                                            is_baby: e.is_baby,
+                                            walk_anim_pos: {
+                                                let scale = if e.is_baby { 3.0 } else { 1.0 };
+                                                (e.walk_anim_pos
+                                                    - e.walk_anim_speed * (1.0 - alpha))
+                                                    * scale
+                                            },
+                                            walk_anim_speed: (e.prev_walk_anim_speed
+                                                + (e.walk_anim_speed - e.prev_walk_anim_speed)
+                                                    * alpha)
+                                                .min(1.0),
+                                            entity_kind: e.entity_type,
+                                        }
+                                    })
+                                    .collect();
+
                                 let sky = crate::renderer::SkyState {
                                     day_time: self.sky_state.day_time,
                                     game_time: self.sky_state.game_time,
@@ -1172,6 +1306,7 @@ impl ApplicationHandler for App {
                                     swing_progress,
                                     destroy_info,
                                     sky,
+                                    &entity_renders,
                                 ) {
                                     log::error!("Render error: {e}");
                                 }
