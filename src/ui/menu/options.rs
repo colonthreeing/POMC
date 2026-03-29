@@ -2,9 +2,15 @@ use super::*;
 
 impl MainMenu {
     pub(super) fn build_options(&mut self, sw: f32, sh: f32, input: &MenuInput) -> MainMenuResult {
-        let fov_label = format!("FOV: {}", 70);
+        let fov_label = if self.fov == 70 {
+            "FOV: Normal".to_string()
+        } else if self.fov >= 110 {
+            "FOV: Quake Pro".to_string()
+        } else {
+            format!("FOV: {}", self.fov)
+        };
         let rows: Vec<[&str; 2]> = vec![
-            [&fov_label, "Online"],
+            [&fov_label, "Online..."],
             ["Skin Customization...", "Music & Sounds..."],
             ["Video Settings...", "Controls..."],
             ["Language...", "Chat Settings..."],
@@ -13,6 +19,7 @@ impl MainMenu {
         ];
 
         let nav: &[(&str, Screen)] = &[
+            ("Online...", Screen::OptionsOnline),
             ("Skin Customization...", Screen::OptionsSkinCustomization),
             ("Music & Sounds...", Screen::OptionsMusicSounds),
             ("Video Settings...", Screen::OptionsVideo),
@@ -25,6 +32,8 @@ impl MainMenu {
             ("Credits & Attribution...", Screen::OptionsCredits),
         ];
 
+        let fov_frac = (self.fov as f32 - 30.0) / 80.0;
+        let sliders: &[(&str, f32)] = &[("FOV:", fov_frac)];
         self.build_options_grid(
             sw,
             sh,
@@ -33,8 +42,9 @@ impl MainMenu {
             Screen::Main,
             &rows,
             nav,
-            &[],
+            sliders,
             false,
+            &[],
         )
     }
 
@@ -82,6 +92,7 @@ impl MainMenu {
             &[],
             sliders,
             true,
+            &[],
         )
     }
 
@@ -108,6 +119,233 @@ impl MainMenu {
             nav,
             &[],
             true,
+            &[],
+        )
+    }
+
+    pub(super) fn build_options_chat(
+        &mut self,
+        sw: f32,
+        sh: f32,
+        input: &MenuInput,
+    ) -> MainMenuResult {
+        let rows: Vec<[&str; 2]> = vec![
+            ["Chat: Shown", "Chat Colors: ON"],
+            ["Web Links: ON", "Prompt on Links: ON"],
+            ["Chat Text Opacity: 100%", "Text Background Opacity: 50%"],
+            ["Chat Text Size: 100%", "Line Spacing: 0%"],
+            ["Chat Delay: None", "Chat Width: 100%"],
+            ["Focused Height: 100%", "Unfocused Height: 100%"],
+            ["Narrator: OFF", "Command Suggestions: ON"],
+            ["Hide Matched Names: ON", "Reduced Debug Info: OFF"],
+            ["Only Show Secure Chat: OFF", "Save Chat Drafts: OFF"],
+        ];
+        self.build_options_grid(
+            sw,
+            sh,
+            input,
+            "Chat Settings",
+            Screen::Options,
+            &rows,
+            &[],
+            &[],
+            true,
+            &[],
+        )
+    }
+
+    pub(super) fn build_options_accessibility(
+        &mut self,
+        sw: f32,
+        sh: f32,
+        input: &MenuInput,
+    ) -> MainMenuResult {
+        let rows: Vec<[&str; 2]> = vec![
+            ["Narrator: OFF", "Show Subtitles: OFF"],
+            ["High Contrast: OFF", "Menu Background Blur: 50%"],
+            [
+                "Text Background Opacity: 50%",
+                "Background for Chat Only: OFF",
+            ],
+            ["Chat Text Opacity: 100%", "Line Spacing: 0%"],
+            ["Chat Delay: None", "Notification Time: 10.0s"],
+            ["View Bobbing: ON", "Distortion Effects: 100%"],
+            ["FOV Effects: 100%", "Darkness Pulsing: 100%"],
+            ["Damage Tilt: 100%", "Glint Speed: 100%"],
+            ["Glint Strength: 100%", "Hide Lightning Flashes: OFF"],
+            ["Dark Loading Screen: OFF", "Panorama Scroll Speed: 100%"],
+            ["Hide Splash Texts: OFF", "Narrator Hotkey: ON"],
+            ["Rotate with Minecart: OFF", "High Contrast Outlines: OFF"],
+        ];
+        self.build_options_grid(
+            sw,
+            sh,
+            input,
+            "Accessibility Settings",
+            Screen::Options,
+            &rows,
+            &[],
+            &[],
+            true,
+            &[],
+        )
+    }
+
+    pub(super) fn build_options_music(
+        &mut self,
+        sw: f32,
+        sh: f32,
+        input: &MenuInput,
+    ) -> MainMenuResult {
+        let rows: Vec<[&str; 2]> = vec![
+            ["Master Volume: 100%", ""],
+            ["Music: 100%", "Jukebox/Note Blocks: 100%"],
+            ["Weather: 100%", "Blocks: 100%"],
+            ["Hostile Creatures: 100%", "Friendly Creatures: 100%"],
+            ["Players: 100%", "Ambient/Environment: 100%"],
+            ["Voice/Speech: 100%", "UI: 100%"],
+            ["Device: Default", ""],
+            ["Show Subtitles: OFF", "Directional Audio: OFF"],
+            ["Music Frequency: Normal", "Music Toast: ON"],
+        ];
+        let sliders: &[(&str, f32)] = &[
+            ("Master Volume:", 1.0),
+            ("Music:", 1.0),
+            ("Jukebox/Note Blocks:", 1.0),
+            ("Weather:", 1.0),
+            ("Blocks:", 1.0),
+            ("Hostile Creatures:", 1.0),
+            ("Friendly Creatures:", 1.0),
+            ("Players:", 1.0),
+            ("Ambient/Environment:", 1.0),
+            ("Voice/Speech:", 1.0),
+            ("UI:", 1.0),
+        ];
+        self.build_options_grid(
+            sw,
+            sh,
+            input,
+            "Music & Sounds",
+            Screen::Options,
+            &rows,
+            &[],
+            sliders,
+            true,
+            &[],
+        )
+    }
+
+    pub(super) fn build_options_skin(
+        &mut self,
+        sw: f32,
+        sh: f32,
+        input: &MenuInput,
+    ) -> MainMenuResult {
+        let cape = if self.skin_cape {
+            "Cape: ON"
+        } else {
+            "Cape: OFF"
+        };
+        let jacket = if self.skin_jacket {
+            "Jacket: ON"
+        } else {
+            "Jacket: OFF"
+        };
+        let left_sleeve = if self.skin_left_sleeve {
+            "Left Sleeve: ON"
+        } else {
+            "Left Sleeve: OFF"
+        };
+        let right_sleeve = if self.skin_right_sleeve {
+            "Right Sleeve: ON"
+        } else {
+            "Right Sleeve: OFF"
+        };
+        let left_pants = if self.skin_left_pants {
+            "Left Pants Leg: ON"
+        } else {
+            "Left Pants Leg: OFF"
+        };
+        let right_pants = if self.skin_right_pants {
+            "Right Pants Leg: ON"
+        } else {
+            "Right Pants Leg: OFF"
+        };
+        let hat = if self.skin_hat { "Hat: ON" } else { "Hat: OFF" };
+        let main_hand = if self.skin_main_hand_right {
+            "Main Hand: Right"
+        } else {
+            "Main Hand: Left"
+        };
+        let rows: Vec<[&str; 2]> = vec![
+            [cape, jacket],
+            [left_sleeve, right_sleeve],
+            [left_pants, right_pants],
+            [hat, main_hand],
+        ];
+        self.build_options_grid(
+            sw,
+            sh,
+            input,
+            "Skin Customization",
+            Screen::Options,
+            &rows,
+            &[],
+            &[],
+            true,
+            &[],
+        )
+    }
+
+    pub(super) fn build_options_online(
+        &mut self,
+        sw: f32,
+        sh: f32,
+        input: &MenuInput,
+    ) -> MainMenuResult {
+        let online_status_label = if self.show_online_status {
+            "Show Online Status: ON"
+        } else {
+            "Show Online Status: OFF"
+        };
+        let current_server_label = if self.show_current_server {
+            "Show Current Server: ON"
+        } else {
+            "Show Current Server: OFF"
+        };
+        let rows: Vec<[&str; 2]> = vec![
+            ["Realms Notifications: ON", "Allow Server Listings: ON"],
+            [online_status_label, current_server_label],
+        ];
+        let tooltips: &[(&str, &str)] = &[
+            (
+                "Realms Notifications:",
+                "Receive notifications about Realms updates",
+            ),
+            (
+                "Allow Server Listings:",
+                "Allow servers to list your name in their player list",
+            ),
+            (
+                "Show Online Status:",
+                "Allow friends to see when you're online",
+            ),
+            (
+                "Show Current Server:",
+                "Allow friends to see which server you're on",
+            ),
+        ];
+        self.build_options_grid(
+            sw,
+            sh,
+            input,
+            "Online Options...",
+            Screen::Options,
+            &rows,
+            &[],
+            &[],
+            true,
+            tooltips,
         )
     }
 
@@ -123,6 +361,7 @@ impl MainMenu {
         nav: &[(&str, Screen)],
         sliders: &[(&'static str, f32)],
         header_footer: bool,
+        tooltips: &[(&str, &str)],
     ) -> MainMenuResult {
         if input.escape {
             self.screen = back.clone_screen();
@@ -213,25 +452,57 @@ impl MainMenu {
             });
         }
 
-        let content_pad = if header_footer { 30.0 * gs } else { 0.0 };
+        let content_pad = if header_footer { 4.0 * gs } else { 0.0 };
         let first_row_gap = if header_footer { 0.0 } else { 24.0 * gs };
         let grid_h =
             rows.len() as f32 * btn_h + (rows.len() as f32 - 1.0).max(0.0) * gap + first_row_gap;
-        let top_y = if header_footer {
-            content_top + content_pad
+        let content_h = content_bottom - content_top;
+        let scrollable = header_footer && grid_h + content_pad > content_h;
+        if scrollable {
+            let max_scroll = (grid_h + content_pad - content_h).max(0.0);
+            if common::hit_test(cursor, [0.0, content_top, sw, content_h]) {
+                self.scroll_offset -= input.scroll_delta * 20.0 * gs;
+            }
+            self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
         } else {
-            content_top + (content_bottom - content_top - grid_h) / 2.0
+            self.scroll_offset = 0.0;
+        }
+        let scroll = if scrollable { self.scroll_offset } else { 0.0 };
+        let top_y = if header_footer {
+            content_top + content_pad - scroll
+        } else {
+            content_top + (content_h - grid_h) / 2.0
         };
         let lx = cx - half_w;
         let rx = lx + btn_w + gap;
+        let full_w = btn_w * 2.0 + gap;
 
         let mut slider_results: Vec<(&str, f32)> = Vec::new();
+
+        if header_footer {
+            elements.push(MenuElement::ScissorPush {
+                x: 0.0,
+                y: content_top,
+                w: sw,
+                h: content_bottom - content_top,
+            });
+        }
 
         for (row, pair) in rows.iter().enumerate() {
             let extra = if row > 0 { first_row_gap } else { 0.0 };
             let by = top_y + row as f32 * (btn_h + gap) + extra;
+            let is_full_width = pair[1].is_empty();
             for (col, label) in pair.iter().enumerate() {
-                let bx = if col == 0 { lx } else { rx };
+                if label.is_empty() {
+                    continue;
+                }
+                let (bx, bw) = if is_full_width {
+                    (lx, full_w)
+                } else if col == 0 {
+                    (lx, btn_w)
+                } else {
+                    (rx, btn_w)
+                };
 
                 if let Some((prefix, value)) = sliders.iter().find(|(p, _)| label.starts_with(p)) {
                     let is_active = self.active_slider == Some(*prefix);
@@ -241,7 +512,7 @@ impl MainMenu {
                         input.mouse_held,
                         bx,
                         by,
-                        btn_w,
+                        bw,
                         btn_h,
                         gs,
                         fs,
@@ -267,7 +538,7 @@ impl MainMenu {
                     cursor,
                     bx,
                     by,
-                    btn_w,
+                    bw,
                     btn_h,
                     gs,
                     fs,
@@ -275,6 +546,9 @@ impl MainMenu {
                     true,
                 );
                 any_hovered |= h;
+                if h && let Some((_, tip)) = tooltips.iter().find(|(p, _)| label.starts_with(p)) {
+                    common::push_tooltip(&mut elements, cursor, sw, sh, gs, tip);
+                }
                 if clicked && h {
                     if let Some((_, target)) = nav.iter().find(|(l, _)| *l == *label) {
                         self.screen = target.clone_screen();
@@ -286,6 +560,46 @@ impl MainMenu {
                     }
                     if label.starts_with("Fullscreen:") {
                         self.display_mode = self.display_mode.cycle();
+                    }
+                    if label.starts_with("Show Online Status:") {
+                        self.show_online_status = !self.show_online_status;
+                        self.save_settings();
+                    }
+                    if label.starts_with("Show Current Server:") {
+                        self.show_current_server = !self.show_current_server;
+                        self.save_settings();
+                    }
+                    if label.starts_with("Cape:") {
+                        self.skin_cape = !self.skin_cape;
+                        self.save_settings();
+                    }
+                    if label.starts_with("Jacket:") {
+                        self.skin_jacket = !self.skin_jacket;
+                        self.save_settings();
+                    }
+                    if label.starts_with("Left Sleeve:") {
+                        self.skin_left_sleeve = !self.skin_left_sleeve;
+                        self.save_settings();
+                    }
+                    if label.starts_with("Right Sleeve:") {
+                        self.skin_right_sleeve = !self.skin_right_sleeve;
+                        self.save_settings();
+                    }
+                    if label.starts_with("Left Pants Leg:") {
+                        self.skin_left_pants = !self.skin_left_pants;
+                        self.save_settings();
+                    }
+                    if label.starts_with("Right Pants Leg:") {
+                        self.skin_right_pants = !self.skin_right_pants;
+                        self.save_settings();
+                    }
+                    if label.starts_with("Hat:") {
+                        self.skin_hat = !self.skin_hat;
+                        self.save_settings();
+                    }
+                    if label.starts_with("Main Hand:") {
+                        self.skin_main_hand_right = !self.skin_main_hand_right;
+                        self.save_settings();
                     }
                 }
             }
@@ -300,6 +614,39 @@ impl MainMenu {
                 self.simulation_distance = (5.0 + value * 27.0).round() as u32;
                 self.save_settings();
             }
+            if *prefix == "FOV:" {
+                self.fov = (30.0 + value * 80.0).round() as u32;
+                self.save_settings();
+            }
+        }
+
+        elements.push(MenuElement::ScissorPop);
+
+        if scrollable {
+            let max_scroll = (grid_h + content_pad - content_h).max(0.001);
+            let track_w = 6.0 * gs;
+            let track_x = sw - track_w - 2.0 * gs;
+            let thumb_frac = content_h / (grid_h + content_pad);
+            let thumb_h = (content_h * thumb_frac).max(8.0 * gs);
+            let thumb_y = content_top + (scroll / max_scroll) * (content_h - thumb_h);
+            elements.push(MenuElement::NineSlice {
+                x: track_x,
+                y: content_top,
+                w: track_w,
+                h: content_h,
+                sprite: SpriteId::ScrollerBackground,
+                border: 1.0 * gs,
+                tint: WHITE,
+            });
+            elements.push(MenuElement::NineSlice {
+                x: track_x,
+                y: thumb_y,
+                w: track_w,
+                h: thumb_h,
+                sprite: SpriteId::Scroller,
+                border: 1.0 * gs,
+                tint: WHITE,
+            });
         }
 
         let done_w = 200.0 * gs;

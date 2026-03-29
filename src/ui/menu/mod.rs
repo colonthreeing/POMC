@@ -24,6 +24,36 @@ struct Settings {
     gui_scale: u32,
     render_distance: u32,
     simulation_distance: u32,
+    #[serde(default = "default_fov")]
+    fov: u32,
+    #[serde(default = "default_true")]
+    show_online_status: bool,
+    #[serde(default = "default_true")]
+    show_current_server: bool,
+    #[serde(default = "default_true")]
+    skin_cape: bool,
+    #[serde(default = "default_true")]
+    skin_jacket: bool,
+    #[serde(default = "default_true")]
+    skin_left_sleeve: bool,
+    #[serde(default = "default_true")]
+    skin_right_sleeve: bool,
+    #[serde(default = "default_true")]
+    skin_left_pants: bool,
+    #[serde(default = "default_true")]
+    skin_right_pants: bool,
+    #[serde(default = "default_true")]
+    skin_hat: bool,
+    #[serde(default = "default_true")]
+    skin_main_hand_right: bool,
+}
+
+fn default_fov() -> u32 {
+    70
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -32,6 +62,17 @@ impl Default for Settings {
             gui_scale: 0,
             render_distance: 12,
             simulation_distance: 12,
+            fov: 70,
+            show_online_status: true,
+            show_current_server: true,
+            skin_cape: true,
+            skin_jacket: true,
+            skin_left_sleeve: true,
+            skin_right_sleeve: true,
+            skin_left_pants: true,
+            skin_right_pants: true,
+            skin_hat: true,
+            skin_main_hand_right: true,
         }
     }
 }
@@ -136,6 +177,7 @@ enum Screen {
     EditServer(usize),
     Disconnected(String),
     Options,
+    OptionsOnline,
     OptionsVideo,
     OptionsSkinCustomization,
     OptionsMusicSounds,
@@ -154,6 +196,7 @@ impl Screen {
         match self {
             Self::Main => Self::Main,
             Self::Options => Self::Options,
+            Self::OptionsOnline => Self::OptionsOnline,
             Self::OptionsVideo => Self::OptionsVideo,
             Self::OptionsSkinCustomization => Self::OptionsSkinCustomization,
             Self::OptionsMusicSounds => Self::OptionsMusicSounds,
@@ -209,6 +252,17 @@ pub struct MainMenu {
     pub gui_scale_setting: u32,
     pub render_distance: u32,
     pub simulation_distance: u32,
+    pub fov: u32,
+    pub show_online_status: bool,
+    pub show_current_server: bool,
+    skin_cape: bool,
+    skin_jacket: bool,
+    skin_left_sleeve: bool,
+    skin_right_sleeve: bool,
+    skin_left_pants: bool,
+    skin_right_pants: bool,
+    skin_hat: bool,
+    skin_main_hand_right: bool,
     pub display_mode: DisplayMode,
     active_slider: Option<&'static str>,
     settings_dir: PathBuf,
@@ -252,6 +306,17 @@ impl MainMenu {
             gui_scale_setting: settings.gui_scale,
             render_distance: settings.render_distance,
             simulation_distance: settings.simulation_distance,
+            fov: settings.fov,
+            show_online_status: settings.show_online_status,
+            show_current_server: settings.show_current_server,
+            skin_cape: settings.skin_cape,
+            skin_jacket: settings.skin_jacket,
+            skin_left_sleeve: settings.skin_left_sleeve,
+            skin_right_sleeve: settings.skin_right_sleeve,
+            skin_left_pants: settings.skin_left_pants,
+            skin_right_pants: settings.skin_right_pants,
+            skin_hat: settings.skin_hat,
+            skin_main_hand_right: settings.skin_main_hand_right,
             display_mode: DisplayMode::Windowed,
             active_slider: None,
             settings_dir: game_dir.to_path_buf(),
@@ -266,6 +331,17 @@ impl MainMenu {
                 gui_scale: self.gui_scale_setting,
                 render_distance: self.render_distance,
                 simulation_distance: self.simulation_distance,
+                fov: self.fov,
+                show_online_status: self.show_online_status,
+                show_current_server: self.show_current_server,
+                skin_cape: self.skin_cape,
+                skin_jacket: self.skin_jacket,
+                skin_left_sleeve: self.skin_left_sleeve,
+                skin_right_sleeve: self.skin_right_sleeve,
+                skin_left_pants: self.skin_left_pants,
+                skin_right_pants: self.skin_right_pants,
+                skin_hat: self.skin_hat,
+                skin_main_hand_right: self.skin_main_hand_right,
             },
         );
     }
@@ -278,6 +354,7 @@ impl MainMenu {
         matches!(
             self.screen,
             Screen::Options
+                | Screen::OptionsOnline
                 | Screen::OptionsVideo
                 | Screen::OptionsSkinCustomization
                 | Screen::OptionsMusicSounds
@@ -333,21 +410,10 @@ impl MainMenu {
                 self.build_disconnected(screen_w, screen_h, input, &text_width_fn)
             }
             Screen::Options => self.build_options(screen_w, screen_h, input),
+            Screen::OptionsOnline => self.build_options_online(screen_w, screen_h, input),
             Screen::OptionsVideo => self.build_options_video(screen_w, screen_h, input),
-            Screen::OptionsSkinCustomization => self.build_options_stub(
-                screen_w,
-                screen_h,
-                input,
-                "Skin Customization",
-                Screen::Options,
-            ),
-            Screen::OptionsMusicSounds => self.build_options_stub(
-                screen_w,
-                screen_h,
-                input,
-                "Music & Sounds",
-                Screen::Options,
-            ),
+            Screen::OptionsSkinCustomization => self.build_options_skin(screen_w, screen_h, input),
+            Screen::OptionsMusicSounds => self.build_options_music(screen_w, screen_h, input),
             Screen::OptionsControls => self.build_options_controls(screen_w, screen_h, input),
             Screen::OptionsKeybinds => self.build_options_stub(
                 screen_w,
@@ -359,9 +425,7 @@ impl MainMenu {
             Screen::OptionsLanguage => {
                 self.build_options_stub(screen_w, screen_h, input, "Language", Screen::Options)
             }
-            Screen::OptionsChatSettings => {
-                self.build_options_stub(screen_w, screen_h, input, "Chat Settings", Screen::Options)
-            }
+            Screen::OptionsChatSettings => self.build_options_chat(screen_w, screen_h, input),
             Screen::OptionsResourcePacks => self.build_options_stub(
                 screen_w,
                 screen_h,
@@ -369,13 +433,9 @@ impl MainMenu {
                 "Resource Packs",
                 Screen::Options,
             ),
-            Screen::OptionsAccessibility => self.build_options_stub(
-                screen_w,
-                screen_h,
-                input,
-                "Accessibility Settings",
-                Screen::Options,
-            ),
+            Screen::OptionsAccessibility => {
+                self.build_options_accessibility(screen_w, screen_h, input)
+            }
             Screen::OptionsTelemetry => self.build_options_stub(
                 screen_w,
                 screen_h,
