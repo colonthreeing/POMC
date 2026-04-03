@@ -24,6 +24,7 @@ use crate::renderer::pipelines::entity_renderer::EntityRenderInfo;
 use crate::renderer::pipelines::menu_overlay::MenuElement;
 use crate::ui::chat::ChatState;
 use crate::ui::common::{self, WHITE};
+use crate::ui::death::{self, DeathAction};
 use crate::ui::hud;
 use crate::ui::menu::{MainMenu, MenuAction, MenuInput, PanoramaTheme};
 use crate::ui::pause::{self, PauseAction};
@@ -91,6 +92,7 @@ struct App {
     net_events: Option<crossbeam_channel::Receiver<NetworkEvent>>,
     chat_sender: Option<crossbeam_channel::Sender<String>>,
     packet_sender: Option<crate::net::sender::PacketSender>,
+    net_task: Option<tokio::task::JoinHandle<()>>,
     chunk_store: ChunkStore,
     entity_store: EntityStore,
     data_dirs: DataDirs,
@@ -107,6 +109,12 @@ struct App {
         Arc<std::collections::HashMap<u32, crate::renderer::chunk::mesher::BiomeClimate>>,
     mesh_dispatcher: Option<MeshDispatcher>,
     paused: bool,
+    dead: bool,
+    death_message: String,
+    death_instant: Instant,
+    death_confirm: bool,
+    death_confirm_instant: Instant,
+    respawn_sent: bool,
     inventory_open: bool,
     chat: ChatState,
     panorama_scroll: f32,
@@ -165,13 +173,14 @@ impl App {
         tokio_rt: Arc<tokio::runtime::Runtime>,
         presence: Option<crate::discord::DiscordPresence>,
     ) -> Self {
-        let (net_events, chat_sender, packet_sender) = match connection {
+        let (net_events, chat_sender, packet_sender, net_task) = match connection {
             Some(handle) => (
                 Some(handle.events),
                 Some(handle.chat_tx),
                 Some(crate::net::sender::PacketSender::new(handle.packet_tx)),
+                Some(handle.task),
             ),
-            None => (None, None, None),
+            None => (None, None, None, None),
         };
         let state = if net_events.is_some() {
             GameState::Connecting
@@ -189,6 +198,7 @@ impl App {
             net_events,
             chat_sender,
             packet_sender,
+            net_task,
             chunk_store: ChunkStore::new(DEFAULT_RENDER_DISTANCE),
             entity_store: EntityStore::new(),
             asset_index: AssetIndex::load(&data_dirs.indexes_dir, &data_dirs.objects_dir, &version),
@@ -210,6 +220,12 @@ impl App {
             biome_climate: Arc::new(std::collections::HashMap::new()),
             mesh_dispatcher: None,
             paused: false,
+            dead: false,
+            death_message: String::new(),
+            death_instant: Instant::now(),
+            death_confirm: false,
+            death_confirm_instant: Instant::now(),
+            respawn_sent: false,
             inventory_open: false,
             chat: ChatState::new(),
             panorama_scroll: 0.0,
@@ -266,6 +282,7 @@ impl App {
         let Some(window) = &self.window else { return };
         let captured = matches!(self.state, GameState::InGame)
             && !self.paused
+            && !self.dead
             && !self.inventory_open
             && !self.chat.is_open()
             && self.input.is_cursor_captured();
@@ -323,16 +340,35 @@ impl App {
         self.net_events = Some(handle.events);
         self.chat_sender = Some(handle.chat_tx);
         self.packet_sender = Some(crate::net::sender::PacketSender::new(handle.packet_tx));
+        self.net_task = Some(handle.task);
         self.state = GameState::Connecting;
         self.apply_cursor_grab();
     }
 
+    fn send_respawn(&mut self) {
+        if let Some(sender) = &self.packet_sender {
+            sender.send(ServerboundGamePacket::ClientCommand(
+                azalea_protocol::packets::game::s_client_command::ServerboundClientCommand {
+                    action:
+                        azalea_protocol::packets::game::s_client_command::Action::PerformRespawn,
+                },
+            ));
+        }
+        self.death_confirm = false;
+        self.respawn_sent = true;
+    }
+
     fn disconnect_to_menu(&mut self, reason: Option<String>) {
-        self.net_events = None;
-        self.chat_sender = None;
         self.packet_sender = None;
+        self.chat_sender = None;
+        self.net_events = None;
+        if let Some(task) = self.net_task.take() {
+            task.abort();
+        }
         self.state = GameState::Menu;
         self.paused = false;
+        self.dead = false;
+        self.death_message = String::new();
         self.position_set = false;
         self.chunk_store = ChunkStore::new(self.menu.render_distance);
         self.entity_store.clear();
@@ -384,6 +420,7 @@ impl App {
                     tracing::info!("Dimension: height={height}, min_y={min_y}");
                     self.chunk_store =
                         ChunkStore::new_with_dimension(self.menu.render_distance, height, min_y);
+                    self.position_set = false;
                     if let Some(renderer) = &mut self.renderer {
                         renderer.clear_chunk_meshes();
                         self.mesh_dispatcher =
@@ -456,6 +493,20 @@ impl App {
                     self.player.health = health;
                     self.player.food = food;
                     self.player.saturation = saturation;
+                    if health > 0.0 && self.dead {
+                        self.dead = false;
+                        self.apply_cursor_grab();
+                    } else if health <= 0.0 && !self.dead {
+                        self.dead = true;
+                        self.death_message = String::new();
+                        self.death_instant = Instant::now();
+                        self.death_confirm = false;
+                        self.respawn_sent = false;
+                        if let Some(window) = &self.window {
+                            let _ = window.set_cursor_grab(CursorGrabMode::None);
+                            window.set_cursor_visible(true);
+                        }
+                    }
                 }
                 NetworkEvent::InventoryContent { items } => {
                     self.player.inventory.set_contents(items);
@@ -610,6 +661,25 @@ impl App {
                         });
                     self.item_entity_store.pickup(item_id, target_pos);
                 }
+                NetworkEvent::PlayerLogin { entity_id } => {
+                    self.player.entity_id = entity_id;
+                }
+                NetworkEvent::PlayerScore { entity_id, score } => {
+                    if entity_id == self.player.entity_id {
+                        self.player.score = score;
+                    }
+                }
+                NetworkEvent::PlayerDied { message } => {
+                    self.dead = true;
+                    self.death_message = message;
+                    self.death_instant = Instant::now();
+                    self.death_confirm = false;
+                    self.respawn_sent = false;
+                    if let Some(window) = &self.window {
+                        let _ = window.set_cursor_grab(CursorGrabMode::None);
+                        window.set_cursor_visible(true);
+                    }
+                }
                 NetworkEvent::Disconnected { reason } => {
                     tracing::warn!("Disconnected: {reason}");
                     disconnect_reason = Some(reason);
@@ -635,6 +705,9 @@ impl App {
     }
 
     fn tick_physics(&mut self) {
+        if self.dead {
+            return;
+        }
         if let Some(renderer) = &self.renderer {
             self.player.yaw = renderer.camera_yaw();
             self.player.pitch = renderer.camera_pitch();
@@ -897,7 +970,18 @@ impl ApplicationHandler for App {
                                 }
                             } else {
                                 match code {
-                                    KeyCode::Escape => {
+                                    KeyCode::Escape
+                                        if self.death_confirm
+                                            && self
+                                                .death_confirm_instant
+                                                .elapsed()
+                                                .as_secs_f32()
+                                                >= 1.0 =>
+                                    {
+                                        self.death_confirm = false;
+                                        self.send_respawn();
+                                    }
+                                    KeyCode::Escape if !self.dead => {
                                         if self.inventory_open {
                                             self.inventory_open = false;
                                         } else {
@@ -905,7 +989,7 @@ impl ApplicationHandler for App {
                                         }
                                         self.apply_cursor_grab();
                                     }
-                                    KeyCode::KeyE if !self.paused => {
+                                    KeyCode::KeyE if !self.paused && !self.dead => {
                                         self.inventory_open = !self.inventory_open;
                                         self.apply_cursor_grab();
                                     }
@@ -1093,10 +1177,11 @@ impl ApplicationHandler for App {
                                 }
 
                                 let ready = self.position_set
-                                    && self
-                                        .renderer
-                                        .as_ref()
-                                        .is_some_and(|r| r.loaded_chunk_count() > 0);
+                                    && (self.dead
+                                        || self
+                                            .renderer
+                                            .as_ref()
+                                            .is_some_and(|r| r.loaded_chunk_count() > 0));
 
                                 if ready {
                                     if let Some(p) = &mut self.presence {
@@ -1135,6 +1220,8 @@ impl ApplicationHandler for App {
                                 let cy = sh / 2.0;
 
                                 let mut elements = Vec::new();
+                                let clicked = self.input.left_just_pressed();
+                                let cursor = self.input.cursor_pos();
 
                                 elements.push(MenuElement::Text {
                                     x: cx,
@@ -1146,8 +1233,6 @@ impl ApplicationHandler for App {
                                 });
 
                                 let btn_y = cy + fs;
-                                let clicked = self.input.left_just_pressed();
-                                let cursor = self.input.cursor_pos();
                                 if common::push_button(
                                     &mut elements,
                                     cursor,
@@ -1252,6 +1337,7 @@ impl ApplicationHandler for App {
 
                             let mut close_inventory = false;
                             let mut pause_action = PauseAction::None;
+                            let mut death_action = DeathAction::None;
 
                             if let (Some(renderer), Some(window)) =
                                 (&mut self.renderer, &self.window)
@@ -1268,6 +1354,7 @@ impl ApplicationHandler for App {
 
                                 let mut elements: Vec<MenuElement> = Vec::new();
                                 let hide_cursor = !self.paused
+                                    && !self.dead
                                     && !self.inventory_open
                                     && !self.chat.is_open()
                                     && self.input.is_cursor_captured();
@@ -1336,6 +1423,39 @@ impl ApplicationHandler for App {
                                         .menu
                                         .build(sw, sh, &menu_input, |t, s| r.menu_text_width(t, s));
                                     elements.extend(result.elements);
+                                    self.input.clear_click_events();
+                                } else if self.dead {
+                                    let cursor = self.input.cursor_pos();
+                                    let clicked =
+                                        self.input.left_just_pressed() && !self.respawn_sent;
+                                    death_action = if self.death_confirm {
+                                        death::build_death_confirm(
+                                            &mut elements,
+                                            sw,
+                                            sh,
+                                            cursor,
+                                            clicked,
+                                            gs,
+                                            self.death_confirm_instant.elapsed().as_secs_f32()
+                                                >= 1.0,
+                                        )
+                                    } else {
+                                        let buttons_enabled = !self.respawn_sent
+                                            && self.death_instant.elapsed().as_secs_f32() >= 1.0;
+                                        let r = &*renderer;
+                                        death::build_death_screen(
+                                            &mut elements,
+                                            sw,
+                                            sh,
+                                            cursor,
+                                            clicked,
+                                            gs,
+                                            &self.death_message,
+                                            self.player.score,
+                                            buttons_enabled,
+                                            &|t, s| r.menu_text_width(t, s),
+                                        )
+                                    };
                                     self.input.clear_click_events();
                                 } else if self.paused {
                                     let cursor = self.input.cursor_pos();
@@ -1454,6 +1574,21 @@ impl ApplicationHandler for App {
                                 self.apply_cursor_grab();
                             }
 
+                            match death_action {
+                                DeathAction::Respawn => {
+                                    self.death_confirm = false;
+                                    self.send_respawn();
+                                }
+                                DeathAction::TitleScreen => {
+                                    self.disconnect_to_menu(None);
+                                }
+                                DeathAction::ShowConfirm => {
+                                    self.death_confirm = true;
+                                    self.death_confirm_instant = Instant::now();
+                                }
+                                DeathAction::None => {}
+                            }
+
                             match pause_action {
                                 PauseAction::Resume => {
                                     self.paused = false;
@@ -1505,6 +1640,7 @@ impl ApplicationHandler for App {
         if let DeviceEvent::MouseMotion { delta } = event
             && self.input.is_cursor_captured()
             && !self.paused
+            && !self.dead
             && !self.inventory_open
             && !self.chat.is_open()
         {
