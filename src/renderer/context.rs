@@ -39,7 +39,7 @@ pub struct VulkanContext {
     pub graphics_family: u32,
     pub present_family: u32,
     pub swapchain_loader: swapchain::Device,
-    pub allocator: Arc<Mutex<Allocator>>,
+    pub allocator: std::mem::ManuallyDrop<Arc<Mutex<Allocator>>>,
     pub command_pool: vk::CommandPool,
     pub command_buffers: Vec<vk::CommandBuffer>,
     pub image_available: Vec<vk::Semaphore>,
@@ -196,7 +196,7 @@ impl VulkanContext {
             buffer_device_address: false,
             allocation_sizes: Default::default(),
         })?;
-        let allocator = Arc::new(Mutex::new(allocator));
+        let allocator = std::mem::ManuallyDrop::new(Arc::new(Mutex::new(allocator)));
 
         let pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(graphics_family)
@@ -272,11 +272,9 @@ impl Drop for VulkanContext {
 
             self.device.destroy_command_pool(self.command_pool, None);
 
-            // Allocator must be dropped before the device
-            drop(self.allocator.lock().unwrap());
+            drop(std::mem::ManuallyDrop::take(&mut self.allocator));
 
             self.device.destroy_device(None);
-
             self.surface_loader.destroy_surface(self.surface, None);
 
             if let (Some(loader), Some(messenger)) =
