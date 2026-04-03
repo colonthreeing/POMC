@@ -13,7 +13,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
-use crate::entity::EntityStore;
+use crate::entity::{EntityStore, ItemEntityStore};
 use crate::net::NetworkEvent;
 use crate::physics::movement;
 use crate::player::LocalPlayer;
@@ -126,6 +126,7 @@ struct App {
     server_render_distance: u32,
     server_simulation_distance: u32,
     pending_skin_uuid: Option<uuid::Uuid>,
+    item_entity_store: ItemEntityStore,
 }
 
 struct FpsCounter {
@@ -197,6 +198,7 @@ impl App {
             server_render_distance: 0,
             server_simulation_distance: 0,
             pending_skin_uuid: None,
+            item_entity_store: ItemEntityStore::new(),
             player: LocalPlayer::new(),
             tick_accumulator: 0.0,
             prev_player_pos: glam::Vec3::ZERO,
@@ -329,6 +331,7 @@ impl App {
         self.position_set = false;
         self.chunk_store = ChunkStore::new(self.menu.render_distance);
         self.entity_store.clear();
+        self.item_entity_store.clear();
         if let Some(renderer) = &mut self.renderer {
             renderer.clear_chunk_meshes();
             self.mesh_dispatcher =
@@ -509,6 +512,7 @@ impl App {
                     yaw,
                     pitch,
                     head_yaw,
+                    velocity,
                 } => {
                     if crate::entity::is_living_mob(&entity_type) {
                         self.entity_store.spawn_living(
@@ -520,9 +524,15 @@ impl App {
                             head_yaw,
                         );
                     }
+                    if entity_type == azalea_registry::builtin::EntityKind::Item {
+                        let pos = glam::DVec3::new(x, y, z);
+                        let vel = glam::DVec3::new(velocity[0], velocity[1], velocity[2]);
+                        self.item_entity_store.spawn_item(id, pos, vel);
+                    }
                 }
                 NetworkEvent::EntityMoved { id, dx, dy, dz } => {
                     self.entity_store.move_living_delta(id, dx, dy, dz);
+                    self.item_entity_store.move_delta(id, dx, dy, dz);
                 }
                 NetworkEvent::EntityMovedRotated {
                     id,
@@ -534,6 +544,7 @@ impl App {
                 } => {
                     self.entity_store.move_living_delta(id, dx, dy, dz);
                     self.entity_store.update_living_rotation(id, yaw, pitch);
+                    self.item_entity_store.move_delta(id, dx, dy, dz);
                 }
                 NetworkEvent::EntityTeleported {
                     id,
@@ -545,18 +556,51 @@ impl App {
                 } => {
                     self.entity_store.teleport_living(id, x, y, z);
                     self.entity_store.update_living_rotation(id, yaw, pitch);
+                    self.item_entity_store
+                        .teleport(id, glam::DVec3::new(x, y, z));
                 }
                 NetworkEvent::EntitiesRemoved { ids } => {
-                    for id in ids {
-                        self.entity_store.remove_living(id);
+                    for id in &ids {
+                        self.entity_store.remove_living(*id);
                     }
+                    self.item_entity_store.remove(&ids);
                 }
                 NetworkEvent::EntityHeadRotation { id, head_yaw } => {
                     self.entity_store.update_head_rotation(id, head_yaw);
                 }
-                NetworkEvent::EntityItemData { .. } => {}
+                NetworkEvent::EntityItemData {
+                    id,
+                    item_name,
+                    count,
+                } => {
+                    let is_block_model = self
+                        .renderer
+                        .as_mut()
+                        .map(|r| r.ensure_item_mesh(&item_name))
+                        .unwrap_or(false);
+                    self.item_entity_store
+                        .set_item_data(id, item_name, count, is_block_model);
+                }
                 NetworkEvent::EntityBabyFlag { id, is_baby } => {
                     self.entity_store.set_baby(id, is_baby);
+                }
+                NetworkEvent::ItemPickedUp {
+                    item_id,
+                    collector_id,
+                } => {
+                    let target_pos = self
+                        .entity_store
+                        .living
+                        .get(&collector_id)
+                        .map(|e| e.position + glam::DVec3::new(0.0, 0.81, 0.0))
+                        .unwrap_or_else(|| {
+                            glam::DVec3::new(
+                                self.player.position.x as f64,
+                                self.player.position.y as f64 + 0.81,
+                                self.player.position.z as f64,
+                            )
+                        });
+                    self.item_entity_store.pickup(item_id, target_pos);
                 }
                 NetworkEvent::Disconnected { reason } => {
                     log::warn!("Disconnected: {reason}");
@@ -1144,6 +1188,16 @@ impl ApplicationHandler for App {
                                 self.tick_accumulator += dt;
                                 while self.tick_accumulator >= TICK_RATE {
                                     self.tick_physics();
+                                    self.item_entity_store.tick(
+                                        |bx, by, bz| {
+                                            !self.chunk_store.get_block_state(bx, by, bz).is_air()
+                                        },
+                                        |bx, by, bz| {
+                                            block_friction(
+                                                self.chunk_store.get_block_state(bx, by, bz),
+                                            )
+                                        },
+                                    );
                                     self.tick_accumulator -= TICK_RATE;
                                 }
                             }
@@ -1350,6 +1404,19 @@ impl ApplicationHandler for App {
                                     );
                                 }
 
+                                let cam_pos = glam::DVec3::new(
+                                    self.player.position.x as f64,
+                                    self.player.position.y as f64,
+                                    self.player.position.z as f64,
+                                );
+                                let partial_tick = self.tick_accumulator / TICK_RATE;
+                                let item_renders = build_item_render_infos(
+                                    &self.item_entity_store,
+                                    &self.chunk_store,
+                                    cam_pos,
+                                    partial_tick,
+                                );
+
                                 if let Err(e) = renderer.render_world(
                                     window,
                                     hide_cursor,
@@ -1359,6 +1426,7 @@ impl ApplicationHandler for App {
                                     self.show_chunk_borders,
                                     sky,
                                     &entity_renders,
+                                    &item_renders,
                                 ) {
                                     log::error!("Render error: {e}");
                                 }
@@ -1465,6 +1533,135 @@ fn chunk_lod(pos: azalea_core::position::ChunkPos, player: azalea_core::position
     } else {
         2
     }
+}
+
+fn block_friction(state: azalea_block::BlockState) -> f32 {
+    let block: Box<dyn azalea_block::BlockTrait> = state.into();
+    match block.id() {
+        "ice" | "packed_ice" | "frosted_ice" => 0.98,
+        "blue_ice" => 0.989,
+        "slime_block" => 0.8,
+        _ => 0.6,
+    }
+}
+
+fn stack_render_count(count: i32) -> usize {
+    if count <= 1 {
+        1
+    } else if count <= 16 {
+        2
+    } else if count <= 32 {
+        3
+    } else if count <= 48 {
+        4
+    } else {
+        5
+    }
+}
+
+fn seeded_rand(state: &mut u32) -> f32 {
+    *state = state.wrapping_mul(1103515245).wrapping_add(12345);
+    ((*state >> 16) & 0x7FFF) as f32 / 0x7FFF as f32
+}
+
+fn get_entity_light(chunk_store: &ChunkStore, pos: glam::DVec3) -> f32 {
+    use crate::renderer::chunk::mesher::LIGHT_TABLE;
+    let bx = pos.x.floor() as i32;
+    let by = pos.y.floor() as i32;
+    let bz = pos.z.floor() as i32;
+    let level = chunk_store
+        .get_sky_light(bx, by, bz)
+        .max(chunk_store.get_block_light(bx, by, bz));
+    LIGHT_TABLE[level as usize]
+}
+
+fn build_item_render_infos(
+    entity_store: &crate::entity::ItemEntityStore,
+    chunk_store: &ChunkStore,
+    camera_pos: glam::DVec3,
+    partial_tick: f32,
+) -> Vec<crate::renderer::pipelines::item_entity::ItemRenderInfo> {
+    let mut infos = Vec::new();
+    for item in entity_store.visible_items(camera_pos, 64.0) {
+        let age_f = item.age as f32 + partial_tick;
+        let bob = (age_f / 10.0 + item.bob_offset).sin() * 0.1 + 0.1;
+        let spin = age_f / 20.0 + item.bob_offset;
+        let lerped = item.prev_position.lerp(item.position, partial_tick as f64);
+        let pos = lerped.as_vec3();
+        let light = get_entity_light(chunk_store, lerped);
+        let copies = stack_render_count(item.count);
+
+        // Vanilla GROUND display transform: blocks scale=0.25, flat items scale=0.5
+        // Hover = bob + (-boundingBox.minY) + 0.0625
+        // Block model: minY after scale = -0.5 * 0.25 = -0.125 → hover = bob + 0.1875
+        // Flat item: minY after scale = -0.5 * 0.5 = -0.25 → hover = bob + 0.3125
+        let (scale, hover_y) = if item.is_block_model {
+            (0.25, bob + 0.1875)
+        } else {
+            (0.5, bob + 0.3125)
+        };
+
+        let base = glam::Mat4::from_translation(pos + glam::Vec3::new(0.0, hover_y, 0.0))
+            * glam::Mat4::from_rotation_y(spin);
+
+        let mut rng_state = (item.bob_offset * 1000.0) as u32;
+        if item.is_block_model {
+            for i in 0..copies {
+                let copy_offset = if i == 0 {
+                    glam::Mat4::IDENTITY
+                } else {
+                    let rx = seeded_rand(&mut rng_state) * 0.3 - 0.15;
+                    let ry = seeded_rand(&mut rng_state) * 0.3 - 0.15;
+                    let rz = seeded_rand(&mut rng_state) * 0.3 - 0.15;
+                    glam::Mat4::from_translation(glam::Vec3::new(rx, ry, rz))
+                };
+                let model = base * copy_offset * glam::Mat4::from_scale(glam::Vec3::splat(scale));
+                infos.push(crate::renderer::pipelines::item_entity::ItemRenderInfo {
+                    item_name: item.item_name.clone(),
+                    model_matrix: model,
+                    light,
+                });
+            }
+        } else {
+            let depth = 1.0 / 16.0 * scale;
+            let z_step = depth * 1.5;
+            let z_start = -(z_step * (copies - 1) as f32 / 2.0);
+            for i in 0..copies {
+                let z_offset = z_start + z_step * i as f32;
+                let copy_offset = if i == 0 {
+                    glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, z_offset))
+                } else {
+                    let rx = (seeded_rand(&mut rng_state) * 2.0 - 1.0) * 0.15 * 0.5;
+                    let ry = (seeded_rand(&mut rng_state) * 2.0 - 1.0) * 0.15 * 0.5;
+                    glam::Mat4::from_translation(glam::Vec3::new(rx, ry, z_offset))
+                };
+                let model = base * copy_offset * glam::Mat4::from_scale(glam::Vec3::splat(scale));
+                infos.push(crate::renderer::pipelines::item_entity::ItemRenderInfo {
+                    item_name: item.item_name.clone(),
+                    model_matrix: model,
+                    light,
+                });
+            }
+        }
+    }
+
+    for pickup in entity_store.active_pickups(partial_tick) {
+        let pos = pickup.position.as_vec3();
+        let light = get_entity_light(chunk_store, pickup.position);
+        let age_f = pickup.age as f32 + partial_tick;
+        let spin = age_f / 20.0 + pickup.bob_offset;
+        let scale = if pickup.is_block_model { 0.25 } else { 0.5 };
+        let model = glam::Mat4::from_translation(pos)
+            * glam::Mat4::from_rotation_y(spin)
+            * glam::Mat4::from_scale(glam::Vec3::splat(scale));
+        infos.push(crate::renderer::pipelines::item_entity::ItemRenderInfo {
+            item_name: pickup.item_name,
+            model_matrix: model,
+            light,
+        });
+    }
+
+    infos
 }
 
 pub fn run(

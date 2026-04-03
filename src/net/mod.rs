@@ -89,6 +89,7 @@ pub enum NetworkEvent {
         yaw: f32,
         pitch: f32,
         head_yaw: f32,
+        velocity: [f64; 3],
     },
     EntityMoved {
         id: i32,
@@ -115,7 +116,6 @@ pub enum NetworkEvent {
     EntitiesRemoved {
         ids: Vec<i32>,
     },
-    #[allow(dead_code)]
     EntityItemData {
         id: i32,
         item_name: String,
@@ -128,6 +128,10 @@ pub enum NetworkEvent {
     EntityBabyFlag {
         id: i32,
         is_baby: bool,
+    },
+    ItemPickedUp {
+        item_id: i32,
+        collector_id: i32,
     },
     Disconnected {
         reason: String,
