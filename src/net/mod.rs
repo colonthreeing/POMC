@@ -4,15 +4,13 @@ pub mod sender;
 
 use std::sync::Arc;
 
+use crate::sound::sound_instance::SoundInstance;
 use azalea_block::BlockState;
 use azalea_core::heightmap_kind::HeightmapKind;
 use azalea_core::position::{BlockPos, ChunkPos};
-use azalea_core::sound::CustomSound;
 use azalea_inventory::ItemStack;
-use azalea_protocol::packets::game::c_sound::SoundSource;
-use azalea_registry::builtin::{EntityKind, SoundEvent};
-
-use crate::sound::PlayableSound;
+use azalea_protocol::packets::game::{ClientboundSound, ClientboundSoundEntity};
+use azalea_registry::builtin::EntityKind;
 
 pub enum NetworkEvent {
     Connected,
@@ -159,16 +157,11 @@ pub enum NetworkEvent {
     Disconnected {
         reason: String,
     },
+    PlayEntitySound {
+        sound: ClientboundSoundEntity,
+    },
     PlaySound {
-        sound: azalea_registry::Holder<SoundEvent, CustomSound>,
-        source: SoundSource,
-
-        x: i32,
-        y: i32,
-        z: i32,
-        volume: f32,
-        pitch: f32,
-        seed: u64,
+        sound: ClientboundSound,
     },
     PlayerInfoUpdate {
         actions: crate::player::tab_list::PlayerInfoActions,

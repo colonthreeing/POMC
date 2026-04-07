@@ -3,8 +3,6 @@ use azalea_core::registry_holder::RegistryHolder;
 use azalea_protocol::packets::game::{ClientboundGamePacket, ServerboundGamePacket};
 use crossbeam_channel::Sender;
 
-use crate::sound::PlayableSound;
-
 use super::NetworkEvent;
 use super::sender::PacketSender;
 
@@ -308,29 +306,15 @@ pub fn handle_game_packet(
             tracing::info!("Server popping resource pack {:?}", p.id);
             let _ = event_tx.try_send(NetworkEvent::ResourcePackPop { id: p.id });
         }
-        ClientboundGamePacket::SoundEntity(audio) => {
-            let _ = event_tx.try_send(NetworkEvent::PlaySound {
-                sound: audio.sound.clone(),
-                source: audio.source,
-                x: 0,
-                y: 0,
-                z: 0,
-                volume: audio.volume,
-                pitch: audio.pitch,
-                seed: audio.seed,
+        ClientboundGamePacket::SoundEntity(sound) => {
+            let _ = event_tx.try_send(NetworkEvent::PlayEntitySound {
+                sound: sound.clone(),
             });
         }
-        ClientboundGamePacket::Sound(audio) => {
+        ClientboundGamePacket::Sound(sound) => {
             let _ = event_tx.try_send(NetworkEvent::PlaySound {
-                sound: audio.sound.clone(),
-                source: audio.source,
-                x: audio.x,
-                y: audio.y,
-                z: audio.z,
-                volume: audio.volume,
-                pitch: audio.pitch,
-                seed: audio.seed,
-              }
+                sound: sound.clone(),
+            });
         }
         ClientboundGamePacket::PlayerInfoUpdate(p) => {
             use crate::player::tab_list::{PlayerInfoActions, PlayerInfoEntry};
